@@ -18,7 +18,7 @@
   #i-asi{ left:26px; top:50%; transform:translateY(-50%); }
   #i-alt{ right:96px; top:50%; transform:translateY(-50%); }
   #i-vario{ right:22px; top:50%; transform:translateY(-50%); }
-  #i-ah{ bottom:20px; left:50%; transform:translateX(-50%); }
+  #i-wind{ left:24px; bottom:22px; }
   #stallw{ position:absolute; top:74px; left:50%; transform:translateX(-50%); color:#ff5d4d; font-weight:800;
     font-size:15px; letter-spacing:2px; opacity:0; transition:opacity .1s; text-shadow:0 1px 6px rgba(0,0,0,.6); }
   #stallw.on{ opacity:1; }
@@ -49,7 +49,7 @@
   <div id="i-asi" class="inst-wrap"></div>
   <div id="i-alt" class="inst-wrap"></div>
   <div id="i-vario" class="inst-wrap"></div>
-  <div id="i-ah" class="inst-wrap"></div>
+  <div id="i-wind" class="inst-wrap"></div>
   <div id="stallw">⚠ STALL</div>
   <div id="tag">swooper</div>
 </div>
@@ -81,7 +81,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.31';
+const VERSION = '0.32';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -120,10 +120,10 @@ const CY_BETA = 2.0;
 const I_ROLL = 0.80, I_PITCH = 2.00, I_YAW = 2.40;
 // control power. STRONG, snappy pitch; PITCH_STAB tuned so a full pull settles
 // just below the (now higher) stall AoA -> max-G, clean, loop-capable.
-const ROLL_POWER = 9.5;
-// asymmetric pitch: nose-up (pull) gentler than nose-down (push), per feedback.
-const PITCH_POWER_UP = 7.0, PITCH_POWER_DOWN = 11.0;
-const YAW_CTRL = 6.0;                 // rudder authority (Q/E)
+const ROLL_POWER = 7.5;               // gentler roll rate
+// asymmetric pitch: nose-up (pull) gentle; nose-down (push) also eased a bit.
+const PITCH_POWER_UP = 7.0, PITCH_POWER_DOWN = 9.0;
+const YAW_CTRL = 4.0;                 // rudder authority (Q/E) — eased 1.5×
 // aerodynamic stability (weathervane).
 const PITCH_STAB = 36.0, YAW_STAB = 20.0;
 const STALL_PITCH = 5.0;             // nose-down pitching moment once stalled
@@ -157,10 +157,10 @@ renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
 const SKY=new THREE.Color(0xcfe0e8), HORIZON=new THREE.Color(0xeae6d6);
 const scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(HORIZON,0.000055);
 const camera=new THREE.PerspectiveCamera(72, innerWidth/innerHeight, 0.5, 60000);
-scene.add(new THREE.HemisphereLight(0xeaf1ff,0x6e7060,0.62));
+scene.add(new THREE.HemisphereLight(0xeaf1ff,0x6e7060,0.42));   // lower ambient -> darker, more visible shadows
 // sun = shadow-casting directional light, follows the craft so shadows are always near you
 const SUN_OFFSET=new THREE.Vector3(-2600,4200,-1700), SUN_DIR=SUN_OFFSET.clone().normalize();
-const sun=new THREE.DirectionalLight(0xfff2db,1.3); sun.castShadow=true;
+const sun=new THREE.DirectionalLight(0xfff2db,1.55); sun.castShadow=true;
 sun.shadow.mapSize.set(2048,2048); sun.shadow.bias=-0.0004; sun.shadow.normalBias=10;
 { const c=sun.shadow.camera; c.near=200; c.far=14000; c.left=-4200; c.right=4200; c.top=4200; c.bottom=-4200; c.updateProjectionMatrix(); }
 scene.add(sun); scene.add(sun.target);
@@ -327,6 +327,7 @@ let inputOverride=null;             // headless
 addEventListener('keydown',e=>{ if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code))e.preventDefault();
   keys[e.code]=true;
   if(e.code==='KeyR'){ if(state!=='menu') startFlight(); }
+  else if(e.code==='KeyM'){ audioOn=!audioOn; }
   else if(e.code==='Escape'){ if(state==='flying'){ state='paused'; pauseEl.classList.remove('hidden'); } }
   else if(e.code==='Space'){ if(state==='menu'||state==='paused') startFlight(); } });
 addEventListener('keyup',e=>{ keys[e.code]=false; });
@@ -338,6 +339,7 @@ document.getElementById('ver').textContent='v'+VERSION;
 document.getElementById('tag').textContent='swooper v'+VERSION;
 
 function startFlight(){
+  initAudio();
   glider.pos.set(0, Math.max(terrainHeight(0,0)+1300, 2700), 0);   // airborne over the range
   spawnY=glider.pos.y;                                  // ALT readout = climb/descent from start
   const m=new THREE.Matrix4().lookAt(ZERO, new THREE.Vector3(0,-0.10,-1).normalize(), WORLD_UP);
@@ -471,7 +473,7 @@ function updateCamera(dt, rpos, rq){
   // limited tilt toward roll that FADES TO ZERO at inversion -> no jerk in barrel rolls
   _cUp.copy(_cp).sub(_lu).multiplyScalar(ROLL_TILT).add(_lu).normalize();
   // speed -> camera distance (100->60, 300->100), eased
-  const targetDist=clamp(54+(glider.gndspeed-100)*0.07, 54, 68);
+  const targetDist=clamp(30+(glider.gndspeed-100)*0.07, 30, 44);   // much closer
   camDistSmooth += (targetDist-camDistSmooth)*(1-Math.exp(-dt*1.5));
   _camGoal.copy(rpos).addScaledVector(_cf,-camDistSmooth*0.95).addScaledVector(WORLD_UP,camDistSmooth*0.30);
   camera.position.lerp(_camGoal, 1-Math.exp(-dt*1.6));         // smooth chase
@@ -562,29 +564,44 @@ const vNeedle=E('polygon',{points:`${VW-18},${VCY} ${VW-9},${VCY-5} ${VW-9},${VC
 const vVal=E('text',{x:VW-3,y:VCY+4,'text-anchor':'end','font-size':12,fill:C_AMBER,'font-weight':600,'font-family':MONO},vsvg);
 function updVario(ms){ const c=Math.max(-6,Math.min(6,ms)), y=VCY-c*VPX; vNeedle.setAttribute('points',`${VW-18},${y} ${VW-9},${y-5} ${VW-9},${y+5}`); vVal.setAttribute('y',y+4); vVal.textContent=(ms>=0?'+':'')+ms.toFixed(1); }
 
-// ---- artificial horizon ----
-const AHsz=132, AC=AHsz/2, AHR=56, AHP=1.7;
-const ahsvg=E('svg',{viewBox:`0 0 ${AHsz} ${AHsz}`,width:AHsz,height:AHsz,class:'inst'},document.getElementById('i-ah'));
-const ahcl=E('clipPath',{id:'ahcl'},ahsvg); ahcl.appendChild(E('circle',{cx:AC,cy:AC,r:AHR}));
-const ahG=E('g',{'clip-path':'url(#ahcl)'},ahsvg);
-const ahDisc=E('g',{},ahG);
-E('rect',{x:-AHsz,y:-AHsz*1.6,width:AHsz*3,height:AHsz*1.6+AC,fill:'#4f86bf'},ahDisc);
-E('rect',{x:-AHsz,y:AC,width:AHsz*3,height:AHsz*1.8,fill:'#7a5536'},ahDisc);
-E('line',{x1:-AHsz,y1:AC,x2:AHsz*2,y2:AC,stroke:C_CREAM,'stroke-width':1.5},ahDisc);
-for(let p=-30;p<=30;p+=10){ if(p===0)continue; const y=AC-p*AHP, w=(p%20===0)?20:12; E('line',{x1:AC-w,y1:y,x2:AC+w,y2:y,stroke:C_CREAM,'stroke-width':1,opacity:0.85},ahDisc); }
-E('circle',{cx:AC,cy:AC,r:AHR,fill:'none',stroke:C_INK,'stroke-width':3,opacity:0.55},ahsvg);
-E('circle',{cx:AC,cy:AC,r:AHR,fill:'none',stroke:C_CREAM,'stroke-width':1,opacity:0.6},ahsvg);
-for(const b of [-60,-45,-30,-20,-10,0,10,20,30,45,60]){ const a=(b-90)*Math.PI/180, r2=AHR-(b%30===0?9:5); E('line',{x1:AC+Math.cos(a)*AHR,y1:AC+Math.sin(a)*AHR,x2:AC+Math.cos(a)*r2,y2:AC+Math.sin(a)*r2,stroke:C_CREAM,'stroke-width':1.1,opacity:0.7},ahsvg); }
-E('polygon',{points:`${AC},${AC-AHR+2} ${AC-5},${AC-AHR+11} ${AC+5},${AC-AHR+11}`,fill:C_AMBER},ahsvg);
-E('path',{d:`M${AC-28},${AC} h17 l0,5 M${AC+28},${AC} h-17 l0,5`,stroke:C_AMBER,'stroke-width':2.4,fill:'none'},ahsvg);
-E('circle',{cx:AC,cy:AC,r:2.3,fill:C_AMBER},ahsvg);
-function updAH(pitchDeg,bankDeg){ ahDisc.setAttribute('transform',`rotate(${bankDeg} ${AC} ${AC}) translate(0 ${pitchDeg*AHP})`); }
+// ---- wind indicator (direction relative to nose + strength) ----
+const WSZ=76, WC=WSZ/2, WR=26;
+const wsvg=E('svg',{viewBox:`0 0 ${WSZ} ${WSZ+15}`,width:WSZ,height:WSZ+15,class:'inst'},document.getElementById('i-wind'));
+E('circle',{cx:WC,cy:WC,r:WR,fill:C_BG,stroke:C_CREAM,'stroke-width':1,'stroke-opacity':0.4},wsvg);
+E('text',{x:WC,y:11,'text-anchor':'middle','font-size':8.5,fill:C_CREAM,opacity:0.7,'font-family':MONO},wsvg).textContent='WIND';
+const wArrow=E('g',{},wsvg);
+E('polygon',{points:`${WC},${WC-WR+4} ${WC+6},${WC+8} ${WC},${WC+3} ${WC-6},${WC+8}`,fill:'#7fd0ff'},wArrow);
+const wVal=E('text',{x:WC,y:WSZ+11,'text-anchor':'middle','font-size':10.5,fill:C_AMBER,'font-weight':600,'font-family':MONO},wsvg);
+const WIND_ANG=Math.atan2(WIND.x,-WIND.z)*DEG; wVal.textContent=Math.round(WIND.length());
+function updWind(hdg){ wArrow.setAttribute('transform',`rotate(${(WIND_ANG-hdg).toFixed(1)} ${WC} ${WC})`); }
 
 function updateHUD(){
   const air=glider.airspeed, alt=glider.pos.y-spawnY, hdg=Math.atan2(_f.x,-_f.z)*DEG;
-  const pitchDeg=Math.asin(clamp(_f.y,-1,1))*DEG, bankDeg=Math.atan2(_r.y,_u.y)*DEG;
-  updHdg(hdg); updVtape(asi,air); updVtape(alti,alt); updVario(glider.vel.y*0.1); updAH(pitchDeg, AH_SIGN*bankDeg);
+  updHdg(hdg); updVtape(asi,air); updVtape(alti,alt); updVario(glider.vel.y*0.1); updWind(hdg);
   stallW.classList.toggle('on', glider.stall>0.4);
+  updateAudio();
+}
+
+/* ===================== AUDIO (procedural wind) ===================== */
+let audioCtx=null, windGain=null, windFilt=null, audioOn=true;
+function initAudio(){
+  try{
+    if(audioCtx){ audioCtx.resume&&audioCtx.resume(); return; }
+    audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+    const sr=audioCtx.sampleRate, buf=audioCtx.createBuffer(1, sr*2, sr), d=buf.getChannelData(0);
+    for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+    const src=audioCtx.createBufferSource(); src.buffer=buf; src.loop=true;
+    windFilt=audioCtx.createBiquadFilter(); windFilt.type='lowpass'; windFilt.frequency.value=500; windFilt.Q.value=0.7;
+    windGain=audioCtx.createGain(); windGain.gain.value=0;
+    src.connect(windFilt); windFilt.connect(windGain); windGain.connect(audioCtx.destination); src.start();
+  }catch(e){}
+}
+function updateAudio(){
+  if(!audioCtx||audioCtx.state!=='running'||!windGain) return;
+  const sp=glider.airspeed, agl=glider.pos.y-terrainHeight(glider.pos.x,glider.pos.z);
+  const sn=clamp((sp-50)/240,0,1), prox=clamp(1-agl/700,0,1), now=audioCtx.currentTime;
+  windGain.gain.setTargetAtTime(audioOn?(0.03+0.17*sn*sn+0.07*prox):0, now, 0.12);
+  windFilt.frequency.setTargetAtTime(320+sp*4.2+prox*700, now, 0.12);
 }
 
 /* ===================== LOOP ===================== */
