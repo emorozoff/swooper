@@ -29,11 +29,15 @@
     justify-content:center; text-align:center; background:rgba(10,12,17,.45);
     backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px); pointer-events:auto; z-index:5; }
   .overlay.hidden{ display:none; }
-  .title{ font-size:64px; font-weight:900; letter-spacing:8px; margin-bottom:2px; }
-  .ver{ font-size:13px; font-weight:800; letter-spacing:3px; opacity:.5; margin-bottom:22px; }
-  .play{ font:inherit; font-weight:800; font-size:17px; padding:13px 44px; border-radius:11px;
-    border:none; background:#e8b04b; color:#1a1208; cursor:pointer; letter-spacing:2px; }
-  .play:hover{ filter:brightness(1.07); }
+  #menu > div{ position:relative; padding:40px 58px; border:1px solid rgba(232,176,75,.32); border-radius:3px; background:rgba(10,13,17,.22); }
+  #menu > div::before, #menu > div::after{ content:''; position:absolute; width:18px; height:18px; border:2px solid #e8b04b; }
+  #menu > div::before{ top:-1px; left:-1px; border-right:none; border-bottom:none; }
+  #menu > div::after{ bottom:-1px; right:-1px; border-left:none; border-top:none; }
+  .title{ font-size:60px; font-weight:900; letter-spacing:11px; margin-bottom:4px; }
+  .ver{ font-family:ui-monospace,monospace; font-size:12px; font-weight:600; letter-spacing:4px; color:#e8b04b; opacity:.85; margin-bottom:26px; }
+  .play{ font:inherit; font-weight:800; font-size:16px; padding:12px 46px; border-radius:3px;
+    border:1px solid #e8b04b; background:#e8b04b; color:#16100a; cursor:pointer; letter-spacing:3px; }
+  .play:hover{ filter:brightness(1.08); }
   #loaderr{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; text-align:center; padding:30px; z-index:50; }
 </style>
 </head>
@@ -77,7 +81,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.27';
+const VERSION = '0.28';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -116,7 +120,10 @@ const CY_BETA = 2.0;
 const I_ROLL = 0.80, I_PITCH = 2.00, I_YAW = 2.40;
 // control power. STRONG, snappy pitch; PITCH_STAB tuned so a full pull settles
 // just below the (now higher) stall AoA -> max-G, clean, loop-capable.
-const ROLL_POWER = 9.5, PITCH_POWER = 11.0;
+const ROLL_POWER = 9.5;
+// asymmetric pitch: nose-up (pull) gentler than nose-down (push), per feedback.
+const PITCH_POWER_UP = 7.0, PITCH_POWER_DOWN = 11.0;
+const YAW_CTRL = 6.0;                 // rudder authority (Q/E)
 // aerodynamic stability (weathervane).
 const PITCH_STAB = 36.0, YAW_STAB = 20.0;
 const STALL_PITCH = 5.0;             // nose-down pitching moment once stalled
@@ -134,7 +141,7 @@ const WING_BASE_DIH = 0.05, WING_BEND_PER_G = 0.05;
 
 // wind: steady breeze toward +X, plus strong buffeting gusts + sharp squalls
 const WIND = new THREE.Vector3(35, 0, 0);
-const GUST_AMP = 14.0, SQUALL_AMP = 32.0, GUST_ROLL = 0.9;
+const GUST_AMP = 9.0, SQUALL_AMP = 18.0, GUST_ROLL = 0.5;
 
 const clamp=(v,a,b)=> v<a?a:v>b?b:v;
 const invLerp=(a,b,v)=> (v-a)/(b-a);
@@ -146,11 +153,18 @@ const app=document.getElementById('app');
 const renderer=new THREE.WebGLRenderer({antialias:true, powerPreference:'high-performance'});
 renderer.setPixelRatio(Math.min(window.devicePixelRatio,1.5));
 renderer.setSize(innerWidth,innerHeight); app.appendChild(renderer.domElement);
+renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
 const SKY=new THREE.Color(0xcfe0e8), HORIZON=new THREE.Color(0xeae6d6);
 const scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(HORIZON,0.000055);
 const camera=new THREE.PerspectiveCamera(72, innerWidth/innerHeight, 0.5, 60000);
-scene.add(new THREE.HemisphereLight(0xffffff,0x8a8f7a,0.95));
-const keyLight=new THREE.DirectionalLight(0xffffff,0.75); keyLight.position.set(0.5,1,0.3); scene.add(keyLight);
+scene.add(new THREE.HemisphereLight(0xeaf1ff,0x6e7060,0.62));
+// sun = shadow-casting directional light, follows the craft so shadows are always near you
+const SUN_OFFSET=new THREE.Vector3(-2600,4200,-1700), SUN_DIR=SUN_OFFSET.clone().normalize();
+const sun=new THREE.DirectionalLight(0xfff2db,1.3); sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048); sun.shadow.bias=-0.0004; sun.shadow.normalBias=10;
+{ const c=sun.shadow.camera; c.near=200; c.far=14000; c.left=-4200; c.right=4200; c.top=4200; c.bottom=-4200; c.updateProjectionMatrix(); }
+scene.add(sun); scene.add(sun.target);
+const sunDisc=new THREE.Mesh(new THREE.SphereGeometry(1400,18,18), new THREE.MeshBasicMaterial({color:0xfff6e2,fog:false})); sunDisc.renderOrder=-1; scene.add(sunDisc);
 const skyMat=new THREE.ShaderMaterial({ side:THREE.BackSide, fog:false, depthWrite:false, depthTest:false,
   uniforms:{ top:{value:SKY}, bottom:{value:HORIZON} },
   vertexShader:`varying vec3 d; void main(){ d=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
@@ -223,7 +237,7 @@ const chunks=[];
     geo.setAttribute('position',new THREE.BufferAttribute(verts,3));
     geo.setAttribute('color',new THREE.BufferAttribute(cols,3));
     geo.setIndex(idx);
-    const mesh=new THREE.Mesh(geo,terrainMat); mesh.frustumCulled=false;
+    const mesh=new THREE.Mesh(geo,terrainMat); mesh.frustumCulled=false; mesh.castShadow=true; mesh.receiveShadow=true;
     scene.add(mesh); chunks.push({mesh,cx:null,cz:null});
   }
 }
@@ -305,10 +319,11 @@ function buildGlider(){
   return g;
 }
 const gliderGroup=buildGlider(); scene.add(gliderGroup);
+gliderGroup.traverse(o=>{ if(o.isMesh) o.castShadow=true; });
 
 /* ===================== INPUT (keyboard) ===================== */
 const keys={}; let sens=1, invert=false, state='menu', simTime=0, spawnY=0;
-let rawH=0, rawV=0, horizontalInput=0, verticalInput=0;
+let rawH=0, rawV=0, rawY=0, horizontalInput=0, verticalInput=0, yawInput=0;
 let inputOverride=null;             // headless
 addEventListener('keydown',e=>{ if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code))e.preventDefault();
   keys[e.code]=true;
@@ -339,16 +354,18 @@ function startFlight(){
 }
 
 function readInput(){
-  let tH, tV;
-  if (inputOverride){ tH=inputOverride.h; tV=inputOverride.v; }
+  let tH, tV, tY;
+  if (inputOverride){ tH=inputOverride.h; tV=inputOverride.v; tY=inputOverride.yaw||0; }
   else {
     tH=((keys.KeyA||keys.ArrowLeft)?1:0)-((keys.KeyD||keys.ArrowRight)?1:0); // left = roll/turn left
     tV=((keys.ArrowDown||keys.KeyS)?1:0)-((keys.ArrowUp||keys.KeyW)?1:0);    // down = nose up (default)
+    tY=((keys.KeyE)?1:0)-((keys.KeyQ)?1:0);                                  // E = yaw right, Q = yaw left
   }
   const step=AXIS_RATE*FIXED;
-  rawH += clamp(tH-rawH,-step,step); rawV += clamp(tV-rawV,-step,step);
+  rawH += clamp(tH-rawH,-step,step); rawV += clamp(tV-rawV,-step,step); rawY += clamp(tY-rawY,-step,step);
   horizontalInput = rawH * sens;
   verticalInput   = rawV * sens * (invert?-1:1);
+  yawInput        = rawY * sens;
 }
 
 /* ===================== PHYSICS (own aerodynamics) ===================== */
@@ -360,7 +377,7 @@ let lastBeta=0;
 function fixedStep(){
   readInput();
   simTime+=FIXED;
-  const hIn=clamp(horizontalInput,-1,1), vIn=clamp(verticalInput,-1,1);
+  const hIn=clamp(horizontalInput,-1,1), vIn=clamp(verticalInput,-1,1), yIn=clamp(yawInput,-1,1);
 
   _f.set(0,0,-1).applyQuaternion(glider.q);
   _r.set(1,0,0).applyQuaternion(glider.q);
@@ -406,8 +423,8 @@ function fixedStep(){
     const qs=clamp(qd/QD_REF,0,Q_CAP);
     const pRoll=glider.angVel.dot(_f), qPitch=glider.angVel.dot(_r), rYaw=glider.angVel.dot(_u);
     let tRoll  = -ROLL_POWER*hIn*qs;
-    let tPitch =  PITCH_POWER*vIn*qs;
-    let tYaw   =  0;
+    let tPitch =  (vIn>0?PITCH_POWER_UP:PITCH_POWER_DOWN)*vIn*qs;   // gentler pull, fuller push
+    let tYaw   = -YAW_CTRL*yIn*qs;                                  // E = yaw right (heading +)
     tPitch += -PITCH_STAB*(alpha-ALPHA_TRIM)*qs;
     tPitch += -STALL_PITCH*w;
     tYaw   += -YAW_STAB*beta*qs;
@@ -588,6 +605,8 @@ function loop(now){
   updateCamera(frame||FIXED, _rp, _rq);
   updateWings(frame||FIXED);
   sky.position.copy(camera.position);
+  sun.position.copy(_rp).add(SUN_OFFSET); sun.target.position.copy(_rp); sun.target.updateMatrixWorld();
+  sunDisc.position.copy(camera.position).addScaledVector(SUN_DIR,44000);
   updateAirParticles(frame||FIXED);
   renderer.render(scene,camera);
 }
@@ -609,8 +628,8 @@ window.__swooper={
   th(x,z){ return +terrainHeight(x,z).toFixed(0); },
   camUpWorldY(){ return +(new THREE.Vector3(0,1,0).applyQuaternion(camera.quaternion).y).toFixed(3); },
   camDist(){ return +camera.position.distanceTo(gliderGroup.position).toFixed(1); },
-  sim(n,h=0,v=0){
-    inputOverride={h,v}; let minA=999,maxA=-999;
+  sim(n,h=0,v=0,yaw=0){
+    inputOverride={h,v,yaw}; let minA=999,maxA=-999;
     for(let i=0;i<n;i++){ fixedStep(); const f=new THREE.Vector3(0,0,-1).applyQuaternion(glider.q);
       const a=Math.acos(clamp(f.y,-1,1))*DEG; minA=Math.min(minA,a);maxA=Math.max(maxA,a); }
     inputOverride=null;
