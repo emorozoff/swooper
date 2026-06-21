@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>swooper — flight</title>
+<style>
+  *{ margin:0; padding:0; box-sizing:border-box; }
+  html,body{ width:100%; height:100%; overflow:hidden; background:#0c0f14;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:#eef1ea; -webkit-user-select:none; user-select:none; cursor:default; }
+  #app{ position:fixed; inset:0; }
+  canvas{ display:block; }
+  #hud{ position:fixed; inset:0; pointer-events:none; }
+  .panel{ position:absolute; padding:14px 18px; font-variant-numeric:tabular-nums; }
+  #readout{ top:0; left:0; line-height:1.45; }
+  #readout .big{ font-size:34px; font-weight:800; letter-spacing:.5px; text-shadow:0 2px 12px rgba(0,0,0,.5); }
+  #readout .row{ font-size:13px; font-weight:600; opacity:.82; letter-spacing:.3px; }
+  #readout .lbl{ display:inline-block; width:42px; opacity:.6; }
+  #stall{ color:#ff5d4d; font-weight:800; opacity:0; transition:opacity .1s; }
+  #stall.on{ opacity:1; }
+  #windbox{ right:0; bottom:0; text-align:center; line-height:1.2; }
+  #windbox .row{ font-size:11px; font-weight:700; opacity:.7; letter-spacing:1px; margin-top:2px; }
+  #tag{ bottom:0; left:0; font-size:12px; font-weight:700; letter-spacing:2px; opacity:.5; }
+  #vign{ position:fixed; inset:0; pointer-events:none; opacity:0;
+    box-shadow: inset 0 0 24vmin 5vmin rgba(0,0,0,0.5); transition:opacity .12s linear; }
+  .overlay{ position:fixed; inset:0; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; text-align:center; background:rgba(10,12,17,.45);
+    backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px); pointer-events:auto; z-index:5; }
+  .overlay.hidden{ display:none; }
+  .title{ font-size:64px; font-weight:900; letter-spacing:8px; margin-bottom:2px; }
+  .ver{ font-size:13px; font-weight:800; letter-spacing:3px; opacity:.5; margin-bottom:22px; }
+  .play{ font:inherit; font-weight:800; font-size:17px; padding:13px 44px; border-radius:11px;
+    border:none; background:#e8b04b; color:#1a1208; cursor:pointer; letter-spacing:2px; }
+  .play:hover{ filter:brightness(1.07); }
+  #loaderr{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; text-align:center; padding:30px; z-index:50; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="vign"></div>
+<div id="hud">
+  <div class="panel" id="readout">
+    <div class="big"><span id="spd">0</span> <span style="font-size:14px;opacity:.6;font-weight:700">SPD</span></div>
+    <div class="row"><span class="lbl">AIR</span><span id="air">0</span></div>
+    <div class="row"><span class="lbl">ALT</span><span id="alt">0</span></div>
+    <div class="row"><span id="stall">⚠ STALL</span></div>
+  </div>
+  <div class="panel" id="windbox">
+    <svg width="56" height="56" viewBox="-28 -28 56 56" aria-hidden="true">
+      <circle r="25" fill="none" stroke="rgba(255,255,255,.16)" stroke-width="2"/>
+      <g id="windarrow"><path d="M0,-17 L7,9 L0,3.5 L-7,9 Z" fill="#7fd0ff"/></g>
+    </svg>
+    <div class="row">WIND <span id="windspd">0</span></div>
+  </div>
+  <div class="panel" id="tag">swooper</div>
+</div>
+
+<div class="overlay" id="menu">
+  <div>
+    <div class="title">swooper</div>
+    <div class="ver" id="ver">v0.20</div>
+    <button class="play" id="play">START</button>
+  </div>
+</div>
+
+<div class="overlay hidden" id="pause">
+  <div>
+    <div class="title" style="font-size:42px;letter-spacing:5px;">ПАУЗА</div>
+    <button class="play" id="resume" style="margin-top:12px;">Продолжить (Space)</button>
+  </div>
+</div>
+<div id="loaderr"></div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+window.__swooper = {};
+try {
+const VERSION = '0.25';
+
+/* =====================================================================
+   OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
+   gravity + lift QA·V²·Cl(α)⟂airflow + drag QA·V²·Cd(α)∥-airflow.
+   Speed cap = terminal velocity. Stall = Cl collapse past critical AoA.
+   Loops/rolls = control torque vs aerodynamic weathervane stability.
+   v0.20: wind 35 + gusts; pitch +50% sharper; LONG TAIL (×2 yaw
+   inertia/damping -> nose drops slower in knife-edge); mountains +
+   endless descent; glider-shaped craft; stripped dev menu.
+   ===================================================================== */
+const FIXED = 0.02;
+const MASS = 1.0, G = 20.0;
+// QA = ½·ρ·A lumped (force = QA·V²·C). Raised 0.0014->0.0034 = a bigger / more
+// efficient wing (lower wing loading) -> min loop radius ∝ m/(QA·Cl_max) drops
+// -> tight, completable loops. Side effect: more drag -> ~20% slower flight.
+const QA = 0.0034;
+
+// lift curve Cl(α)
+const CL_SLOPE = 6.5, CL_FP = 0.70;
+// higher critical AoA = more stall margin so a hard pull stays attached (max-G)
+// -> loops complete instead of mushing. stall now a low-speed phenomenon.
+const ALPHA_STALL = 0.36, ALPHA_BLEND = 0.045, ALPHA_TRIM = 0.045;
+// drag curve Cd(α). Modest CD0: keep the glide floaty so the craft drifts UP off
+// the steep slope (ground recedes below = endless descent, never a floor crash);
+// dive to skim. (Bigger wing already raised total drag via QA.)
+const CD0 = 0.120, CD_IND = 0.060, CD_STALL = 1.20;
+// lateral
+const CY_BETA = 2.0;
+
+// rotational inertia (body axes). roll easy, pitch/yaw heavier.
+// NOTE: the "long tail" yaw-inertia experiment (×2) was headless A/B-tested
+// vs v0.10 and did NOT slow the knife-edge nose-drop — because in knife-edge
+// α≈β≈0 (the craft already tracks its velocity vector); the nose drops only
+// because the velocity itself curves down (gravity, no lift). A bigger tail
+// tracks the path even tighter -> can't help. Reverted to honest values.
+const I_ROLL = 0.80, I_PITCH = 2.00, I_YAW = 2.40;
+// control power. STRONG, snappy pitch; PITCH_STAB tuned so a full pull settles
+// just below the (now higher) stall AoA -> max-G, clean, loop-capable.
+const ROLL_POWER = 9.5, PITCH_POWER = 11.0;
+// aerodynamic stability (weathervane).
+const PITCH_STAB = 36.0, YAW_STAB = 20.0;
+const STALL_PITCH = 5.0;             // nose-down pitching moment once stalled
+// aerodynamic + base angular damping
+const ROLL_DAMP = 2.7, PITCH_DAMP = 8.0, YAW_DAMP = 3.4;
+const ROLL_DAMP0 = 0.35, PITCH_DAMP0 = 0.50, YAW_DAMP0 = 0.45;
+// control authority reference (dynamic pressure where controls saturate)
+const REF_V = 130, QD_REF = QA*REF_V*REF_V, Q_CAP = 2.2;
+const MAXW = 7.0, INIT_SPEED = 120, AXIS_RATE = 6.0;
+
+const SPD_LO = 90, SPD_HI = 250;     // camera/HUD speed normalization
+
+// cheap wing flex: wings hinge at the root, bow up ∝ aerodynamic load (G)
+const WING_BASE_DIH = 0.05, WING_BEND_PER_G = 0.05;
+
+// wind: light steady breeze toward +X, plus gentle gusts
+const WIND = new THREE.Vector3(35, 0, 0);
+const GUST_AMP = 3.5;
+
+const clamp=(v,a,b)=> v<a?a:v>b?b:v;
+const invLerp=(a,b,v)=> (v-a)/(b-a);
+const WORLD_UP=new THREE.Vector3(0,1,0), WORLD_DOWN=new THREE.Vector3(0,-1,0), ZERO=new THREE.Vector3();
+const DEG=180/Math.PI;
+
+/* ===================== RENDERER / SCENE ===================== */
+const app=document.getElementById('app');
+const renderer=new THREE.WebGLRenderer({antialias:true, powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio,1.5));
+renderer.setSize(innerWidth,innerHeight); app.appendChild(renderer.domElement);
+const SKY=new THREE.Color(0xcfe0e8), HORIZON=new THREE.Color(0xeae6d6);
+const scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(HORIZON,0.000055);
+const camera=new THREE.PerspectiveCamera(72, innerWidth/innerHeight, 0.5, 60000);
+scene.add(new THREE.HemisphereLight(0xffffff,0x8a8f7a,0.95));
+const keyLight=new THREE.DirectionalLight(0xffffff,0.75); keyLight.position.set(0.5,1,0.3); scene.add(keyLight);
+const skyMat=new THREE.ShaderMaterial({ side:THREE.BackSide, fog:false, depthWrite:false, depthTest:false,
+  uniforms:{ top:{value:SKY}, bottom:{value:HORIZON} },
+  vertexShader:`varying vec3 d; void main(){ d=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
+  fragmentShader:`uniform vec3 top,bottom; varying vec3 d; void main(){ float h=clamp(normalize(d).y*.5+.5,0.,1.); gl_FragColor=vec4(mix(bottom,top,smoothstep(0.,1.,h)),1.); }`});
+const sky=new THREE.Mesh(new THREE.SphereGeometry(48000,24,16),skyMat); sky.renderOrder=-1; scene.add(sky);
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+
+/* ===================== TERRAIN — low-poly mountains, endless descent ===================== */
+/* terrainHeight(x,z) = global downslope (so flying forward = downhill, you
+   can glide forever) + ridged fbm mountains. Streamed in a GRID of chunks
+   recentred on the craft (toroidal index map), rebuilt only on boundary cross. */
+// single infinite cone: one mountain, sharp apex at the axis, flanks sloping
+// down and widening forever -> endless descent. You spawn high on a flank and
+// glide outward/down. Same terrainHeight(x,z) feeds streaming/crash/camera.
+// CONE_SLOPE (0.32) is steeper than the glide angle (~0.21) on purpose: the
+// ground falls away faster than you sink -> endless plunge, no floor to hit
+// (dive to skim it, pull up to climb away). BIG_* + WARP add rolling curves.
+const PEAK_Y=2800, CONE_SLOPE=0.38, DETAIL_AMP=750, FF=0.00019, SPAWN_R=2600;
+const TIP_H=2500, TIP_R=1800;                    // tall sharp summit
+const BIG_AMP=1000, BIG_FF=0.000065, WARP=1600;  // large rolling bends + domain warp
+const CHUNK=3000, GRID=7, HALF=(GRID-1)/2, SEG=24;
+function hash2(ix,iz){ let h=Math.imul(ix|0,374761393)^Math.imul(iz|0,668265263); h=Math.imul(h^(h>>>13),1274126177); return ((h^(h>>>16))>>>0)/4294967296; }
+function vnoise(x,z){ const x0=Math.floor(x),z0=Math.floor(z),fx=x-x0,fz=z-z0;
+  const sx=fx*fx*(3-2*fx),sz=fz*fz*(3-2*fz);
+  const a=hash2(x0,z0),b=hash2(x0+1,z0),c=hash2(x0,z0+1),d=hash2(x0+1,z0+1);
+  return a+(b-a)*sx+(c-a)*sz+(a-b-c+d)*sx*sz; }
+function ridged(x,z){ let amp=1,freq=1,sum=0,norm=0;
+  for(let o=0;o<4;o++){ let n=vnoise(x*freq,z*freq); n=1-Math.abs(2*n-1); n*=n; sum+=n*amp; norm+=amp; amp*=0.5; freq*=2; }
+  return sum/norm; }
+function terrainHeight(x,z){
+  const r=Math.sqrt(x*x+z*z);
+  const wx=x+WARP*Math.sin(z*0.00007+1.7), wz=z+WARP*Math.sin(x*0.00006+0.4);  // domain warp -> curvy
+  const big =(vnoise(wx*BIG_FF+5.1, wz*BIG_FF+2.3)-0.5)*BIG_AMP;                // large rolling bends
+  const fine=(ridged(wx*FF+11.3, wz*FF+7.7)-0.45)*DETAIL_AMP;                   // finer ridges
+  const k=Math.min(1, r/1800);                                                 // keep the apex clean & sharp
+  const tip=TIP_H*Math.max(0, 1-r/TIP_R);                                       // tall pointed summit
+  return PEAK_Y - CONE_SLOPE*r + tip + (big+fine)*k;
+}
+
+const C_GREEN=[0.27,0.42,0.20], C_ROCK=[0.46,0.42,0.34], C_SNOW=[0.93,0.94,0.97], C_STEEP=[0.33,0.30,0.27];
+function setColor(col,o,height,ny){
+  const snow =clamp((height-(PEAK_Y-2400))/1500,0,1);   // snow cap near the apex
+  const steep=clamp((0.965-ny)/0.27,0,1);               // rock on steep/ridged faces
+  let r=C_GREEN[0],g=C_GREEN[1],b=C_GREEN[2];
+  r+=(C_ROCK[0]-r)*steep; g+=(C_ROCK[1]-g)*steep; b+=(C_ROCK[2]-b)*steep;
+  r+=(C_SNOW[0]-r)*snow;  g+=(C_SNOW[1]-g)*snow;  b+=(C_SNOW[2]-b)*snow;
+  col[o]=r; col[o+1]=g; col[o+2]=b;
+}
+const terrainMat=new THREE.MeshLambertMaterial({vertexColors:true, flatShading:true});
+const chunks=[];
+{
+  const N=SEG+1, idx=[];
+  for(let z=0;z<SEG;z++)for(let x=0;x<SEG;x++){ const a=z*N+x,b=a+1,c=a+N,d=c+1; idx.push(a,c,b, b,c,d); }
+  for(let i=0;i<GRID*GRID;i++){
+    const geo=new THREE.BufferGeometry();
+    const verts=new Float32Array(N*N*3), cols=new Float32Array(N*N*3);
+    for(let z=0;z<N;z++)for(let x=0;x<N;x++){ const o=(z*N+x)*3; verts[o]=(x/SEG-0.5)*CHUNK; verts[o+1]=0; verts[o+2]=(z/SEG-0.5)*CHUNK; }
+    geo.setAttribute('position',new THREE.BufferAttribute(verts,3));
+    geo.setAttribute('color',new THREE.BufferAttribute(cols,3));
+    geo.setIndex(idx);
+    const mesh=new THREE.Mesh(geo,terrainMat); mesh.frustumCulled=false;
+    scene.add(mesh); chunks.push({mesh,cx:null,cz:null});
+  }
+}
+function buildChunk(ch,cx,cz){
+  const N=SEG+1, pos=ch.mesh.geometry.attributes.position.array, col=ch.mesh.geometry.attributes.color.array;
+  const ox=cx*CHUNK, oz=cz*CHUNK;
+  for(let i=0;i<N*N;i++){ const o=i*3; pos[o+1]=terrainHeight(ox+pos[o], oz+pos[o+2]); }
+  ch.mesh.position.set(ox,0,oz);
+  ch.mesh.geometry.attributes.position.needsUpdate=true;
+  ch.mesh.geometry.computeVertexNormals();
+  const nrm=ch.mesh.geometry.attributes.normal.array;
+  for(let i=0;i<N*N;i++){ const o=i*3; setColor(col,o, pos[o+1], nrm[o+1]); }
+  ch.mesh.geometry.attributes.color.needsUpdate=true;
+  ch.cx=cx; ch.cz=cz;
+}
+function updateTerrain(){
+  const ccx=Math.round(glider.pos.x/CHUNK), ccz=Math.round(glider.pos.z/CHUNK);
+  for(let dz=-HALF;dz<=HALF;dz++)for(let dx=-HALF;dx<=HALF;dx++){
+    const cx=ccx+dx, cz=ccz+dz;
+    const ix=((cx%GRID)+GRID)%GRID, iz=((cz%GRID)+GRID)%GRID;
+    const ch=chunks[ix*GRID+iz];
+    if(ch.cx!==cx||ch.cz!==cz) buildChunk(ch,cx,cz);
+  }
+}
+
+/* ===================== WIND PARTICLES (parcels of air) ===================== */
+const AIR_N=1400, AIR_BOX=1700;
+const airPos=new Float32Array(AIR_N*3);
+let airParticles;
+{
+  const rng=mulberry32(99);
+  for(let i=0;i<AIR_N;i++){ airPos[i*3]=(rng()-0.5)*AIR_BOX; airPos[i*3+1]=(rng()-0.5)*AIR_BOX; airPos[i*3+2]=(rng()-0.5)*AIR_BOX; }
+  const geo=new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(airPos,3));
+  const mat=new THREE.PointsMaterial({ color:0xcfe2ee, size:3.0, sizeAttenuation:true, transparent:true, opacity:0.34, depthWrite:false, fog:false });
+  airParticles=new THREE.Points(geo,mat); airParticles.frustumCulled=false; scene.add(airParticles);
+}
+function updateAirParticles(dt){
+  const c=glider.pos, wx=WIND.x*dt, wy=WIND.y*dt, wz=WIND.z*dt;
+  for(let i=0;i<AIR_N;i++){
+    const o=i*3;
+    let x=airPos[o]+wx, y=airPos[o+1]+wy, z=airPos[o+2]+wz;
+    let rx=x-c.x; rx-=AIR_BOX*Math.round(rx/AIR_BOX); x=c.x+rx;
+    let ry=y-c.y; ry-=AIR_BOX*Math.round(ry/AIR_BOX); y=c.y+ry;
+    let rz=z-c.z; rz-=AIR_BOX*Math.round(rz/AIR_BOX); z=c.z+rz;
+    airPos[o]=x; airPos[o+1]=y; airPos[o+2]=z;
+  }
+  airParticles.geometry.attributes.position.needsUpdate=true;
+}
+
+/* ===================== GLIDER (mesh + state) ===================== */
+const glider={ pos:new THREE.Vector3(), q:new THREE.Quaternion(), vel:new THREE.Vector3(), angVel:new THREE.Vector3(),
+               airspeed:0, gndspeed:0, alpha:0, stall:0, gload:1 };
+const prevPos=new THREE.Vector3(), prevQ=new THREE.Quaternion();
+let wingL=null, wingR=null, bendSmooth=0;   // flexing wing refs + smoothed bend
+function buildGlider(){
+  const g=new THREE.Group();
+  const matBody =new THREE.MeshLambertMaterial({color:0xeceef2, flatShading:true});
+  const matWing =new THREE.MeshLambertMaterial({color:0xd2d6dd, flatShading:true});
+  const matAcc  =new THREE.MeshLambertMaterial({color:0xe8b04b, flatShading:true});
+  const matGlass=new THREE.MeshLambertMaterial({color:0x2b3440, flatShading:true});
+  // forward = -Z (nose), tail = +Z
+  const nose=new THREE.Mesh(new THREE.ConeGeometry(0.62,2.6,14), matBody); nose.rotation.x=-Math.PI/2; nose.position.z=-3.8; g.add(nose);
+  const fus =new THREE.Mesh(new THREE.CylinderGeometry(0.62,0.5,4.4,14), matBody); fus.rotation.x=Math.PI/2; fus.position.z=-0.5; g.add(fus);
+  const boom=new THREE.Mesh(new THREE.CylinderGeometry(0.5,0.16,9.5,12), matBody); boom.rotation.x=Math.PI/2; boom.position.z=6.4; g.add(boom);
+  const can =new THREE.Mesh(new THREE.SphereGeometry(0.62,14,10), matGlass); can.scale.set(1,0.7,2.1); can.position.set(0,0.5,-2.2); g.add(can);
+  // wings — high aspect; geometry origin at the ROOT so they hinge & flex from
+  // the fuselage. Tips are children -> they follow the bend. rotation.z animated.
+  const wingGeoL=new THREE.BoxGeometry(8.4,0.16,1.5).translate(-4.2,0,0);
+  const wingGeoR=new THREE.BoxGeometry(8.4,0.16,1.5).translate( 4.2,0,0);
+  const tipGeo=new THREE.BoxGeometry(0.8,0.18,1.2);
+  wingL=new THREE.Mesh(wingGeoL,matWing); wingL.position.set(-0.3,0.25,-1.0); wingL.rotation.y= 0.06; g.add(wingL);
+  wingR=new THREE.Mesh(wingGeoR,matWing); wingR.position.set( 0.3,0.25,-1.0); wingR.rotation.y=-0.06; g.add(wingR);
+  const tl=new THREE.Mesh(tipGeo,matAcc); tl.position.set(-8.1,0.30,0); wingL.add(tl);
+  const tr=new THREE.Mesh(tipGeo,matAcc); tr.position.set( 8.1,0.30,0); wingR.add(tr);
+  wingL.rotation.z=-WING_BASE_DIH; wingR.rotation.z=WING_BASE_DIH;
+  // long tail group at boom end (z≈10.7)
+  const hs=new THREE.Mesh(new THREE.BoxGeometry(4.2,0.14,1.0), matWing); hs.position.set(0,0.1,10.7); g.add(hs);
+  const fin=new THREE.Mesh(new THREE.BoxGeometry(0.16,2.0,1.6), matAcc); fin.position.set(0,1.0,10.6); g.add(fin);
+  return g;
+}
+const gliderGroup=buildGlider(); scene.add(gliderGroup);
+
+/* ===================== INPUT (keyboard) ===================== */
+const keys={}; let sens=1, invert=false, state='menu', simTime=0, spawnY=0;
+let rawH=0, rawV=0, horizontalInput=0, verticalInput=0;
+let inputOverride=null;             // headless
+addEventListener('keydown',e=>{ if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code))e.preventDefault();
+  keys[e.code]=true;
+  if(e.code==='KeyR'){ if(state!=='menu') startFlight(); }
+  else if(e.code==='Escape'){ if(state==='flying'){ state='paused'; pauseEl.classList.remove('hidden'); } }
+  else if(e.code==='Space'){ if(state==='menu'||state==='paused') startFlight(); } });
+addEventListener('keyup',e=>{ keys[e.code]=false; });
+addEventListener('blur',()=>{ for(const k in keys) keys[k]=false; });
+const menuEl=document.getElementById('menu'), pauseEl=document.getElementById('pause');
+document.getElementById('play').onclick=startFlight;
+document.getElementById('resume').onclick=startFlight;
+document.getElementById('ver').textContent='v'+VERSION;
+document.getElementById('tag').textContent='swooper v'+VERSION;
+
+function startFlight(){
+  glider.pos.set(0, terrainHeight(0,-SPAWN_R)+1500, -SPAWN_R);   // high on a flank, peak behind
+  spawnY=glider.pos.y;                                  // ALT readout = descent from start (0 -> negative)
+  const m=new THREE.Matrix4().lookAt(ZERO, new THREE.Vector3(0,-0.10,-1).normalize(), WORLD_UP);
+  glider.q.setFromRotationMatrix(m);
+  const f0=new THREE.Vector3(0,0,-1).applyQuaternion(glider.q);
+  glider.vel.copy(f0).multiplyScalar(INIT_SPEED);
+  glider.angVel.set(0,0,0);
+  glider.airspeed=INIT_SPEED; glider.gndspeed=INIT_SPEED; glider.alpha=0; glider.stall=0;
+  rawH=rawV=horizontalInput=verticalInput=0;
+  prevPos.copy(glider.pos); prevQ.copy(glider.q);
+  updateTerrain();
+  state='flying'; menuEl.classList.add('hidden'); pauseEl.classList.add('hidden');
+}
+
+function readInput(){
+  let tH, tV;
+  if (inputOverride){ tH=inputOverride.h; tV=inputOverride.v; }
+  else {
+    tH=((keys.KeyA||keys.ArrowLeft)?1:0)-((keys.KeyD||keys.ArrowRight)?1:0); // left = roll/turn left
+    tV=((keys.ArrowDown||keys.KeyS)?1:0)-((keys.ArrowUp||keys.KeyW)?1:0);    // down = nose up (default)
+  }
+  const step=AXIS_RATE*FIXED;
+  rawH += clamp(tH-rawH,-step,step); rawV += clamp(tV-rawV,-step,step);
+  horizontalInput = rawH * sens;
+  verticalInput   = rawV * sens * (invert?-1:1);
+}
+
+/* ===================== PHYSICS (own aerodynamics) ===================== */
+const _f=new THREE.Vector3(), _r=new THREE.Vector3(), _u=new THREE.Vector3(),
+      _vair=new THREE.Vector3(), _ahat=new THREE.Vector3(), _lift=new THREE.Vector3(), _side=new THREE.Vector3(),
+      _wind=new THREE.Vector3(), _F=new THREE.Vector3(), _T=new THREE.Vector3(), _dq=new THREE.Quaternion(), _axis=new THREE.Vector3();
+let lastBeta=0;
+
+function fixedStep(){
+  readInput();
+  simTime+=FIXED;
+  const hIn=clamp(horizontalInput,-1,1), vIn=clamp(verticalInput,-1,1);
+
+  _f.set(0,0,-1).applyQuaternion(glider.q);
+  _r.set(1,0,0).applyQuaternion(glider.q);
+  _u.set(0,1,0).applyQuaternion(glider.q);
+
+  // wind + gentle gusts (feeds aero -> craft bobs through real forces)
+  const t=simTime;
+  _wind.set(
+    WIND.x + GUST_AMP*(Math.sin(t*0.37)+0.6*Math.sin(t*0.91+1.3)),
+            GUST_AMP*0.4*(Math.sin(t*0.61+0.8)+0.5*Math.sin(t*1.23+2.1)),
+    WIND.z + GUST_AMP*(Math.sin(t*0.43+2.1)+0.6*Math.sin(t*1.07+0.5))
+  );
+  _vair.copy(glider.vel).sub(_wind);
+  const V=_vair.length();
+  glider.airspeed=V; glider.gndspeed=glider.vel.length();
+
+  _F.set(0,0,0);
+  _F.y -= MASS*G;                                       // gravity
+
+  let alpha=0, beta=0, w=0;
+  if (V>1e-3){
+    _ahat.copy(_vair).multiplyScalar(1/V);
+    const vf=_vair.dot(_f), vu=_vair.dot(_u), vr=_vair.dot(_r);
+    alpha=Math.atan2(-vu, vf);                          // angle of attack
+    beta =Math.atan2( vr, vf);                          // sideslip
+    const aa=Math.abs(alpha);
+    const clAtt=CL_SLOPE*alpha, clFp=CL_FP*Math.sin(2*alpha);
+    w=1/(1+Math.exp(-(aa-ALPHA_STALL)/ALPHA_BLEND));    // 0 attached -> 1 stalled
+    const cl=(1-w)*clAtt + w*clFp;
+    const cd=CD0 + CD_IND*cl*cl + w*CD_STALL*Math.sin(aa)*Math.sin(aa);
+    const qd=QA*V*V;
+    glider.gload=(qd*cl)/(MASS*G);                       // wing load factor (drives flex)
+
+    _lift.copy(_u).addScaledVector(_ahat, -_u.dot(_ahat));
+    if (_lift.lengthSq()>1e-9){ _lift.normalize(); _F.addScaledVector(_lift, qd*cl); }
+    _F.addScaledVector(_ahat, -qd*cd);
+    _side.copy(_r).addScaledVector(_ahat, -_r.dot(_ahat));
+    if (_side.lengthSq()>1e-9){ _side.normalize(); _F.addScaledVector(_side, qd*(-CY_BETA*beta)); }
+
+    // ----- torques (body axes) -----
+    const qs=clamp(qd/QD_REF,0,Q_CAP);
+    const pRoll=glider.angVel.dot(_f), qPitch=glider.angVel.dot(_r), rYaw=glider.angVel.dot(_u);
+    let tRoll  = -ROLL_POWER*hIn*qs;
+    let tPitch =  PITCH_POWER*vIn*qs;
+    let tYaw   =  0;
+    tPitch += -PITCH_STAB*(alpha-ALPHA_TRIM)*qs;
+    tPitch += -STALL_PITCH*w;
+    tYaw   += -YAW_STAB*beta*qs;
+    tRoll  += -(ROLL_DAMP*qs +ROLL_DAMP0 )*pRoll;
+    tPitch += -(PITCH_DAMP*qs+PITCH_DAMP0)*qPitch;
+    tYaw   += -(YAW_DAMP*qs  +YAW_DAMP0  )*rYaw;
+
+    _T.set(0,0,0);
+    _T.addScaledVector(_f, tRoll/I_ROLL);
+    _T.addScaledVector(_r, tPitch/I_PITCH);
+    _T.addScaledVector(_u, tYaw/I_YAW);
+    glider.angVel.addScaledVector(_T, FIXED);
+  }
+  glider.alpha=alpha; glider.stall=w; lastBeta=beta;
+
+  // ----- integrate -----
+  glider.vel.addScaledVector(_F, FIXED/MASS);
+  glider.pos.addScaledVector(glider.vel, FIXED);
+  let wl=glider.angVel.length();
+  if (wl>MAXW){ glider.angVel.multiplyScalar(MAXW/wl); wl=MAXW; }
+  if (wl>1e-6){ _dq.setFromAxisAngle(_axis.copy(glider.angVel).multiplyScalar(1/wl), wl*FIXED); glider.q.premultiply(_dq); glider.q.normalize(); }
+
+  if (glider.pos.y < terrainHeight(glider.pos.x,glider.pos.z)+18){ startFlight(); }
+}
+
+/* ===================== CAMERA (chase, never inverts) ===================== */
+const _camGoal=new THREE.Vector3(), _look=new THREE.Vector3(), _cUp=new THREE.Vector3(), _cu2=new THREE.Vector3(),
+      _cf=new THREE.Vector3(), _lr=new THREE.Vector3(), _lu=new THREE.Vector3(), _cp=new THREE.Vector3(), _ml=new THREE.Matrix4(), _cq=new THREE.Quaternion(), _ctmp=new THREE.Vector3();
+const LOOK_AHEAD=42, ROLL_TILT=0.20;     // camera tilts ≤~14° with bank, fades to 0 inverted (smooth thru rolls)
+let camDistSmooth=60;                     // speed-based camera distance, eased over time
+function updateCamera(dt, rpos, rq){
+  _cf.set(0,0,-1).applyQuaternion(rq);
+  _cu2.set(0,1,0).applyQuaternion(rq);
+  // level (no-roll) up in the plane of forward
+  _lr.crossVectors(_cf, WORLD_UP);
+  if (_lr.lengthSq()<1e-4){ _lr.set(1,0,0).applyQuaternion(rq); _lr.y=0; if(_lr.lengthSq()<1e-6)_lr.set(1,0,0); }
+  _lr.normalize(); _lu.crossVectors(_lr,_cf).normalize();
+  // craft-up projected ⟂ forward (rotates continuously with roll, no atan2 wrap)
+  _cp.copy(_cu2).addScaledVector(_cf, -_cu2.dot(_cf));
+  if (_cp.lengthSq()<1e-6) _cp.copy(_lu); else _cp.normalize();
+  // limited tilt toward roll that FADES TO ZERO at inversion -> no jerk in barrel rolls
+  _cUp.copy(_cp).sub(_lu).multiplyScalar(ROLL_TILT).add(_lu).normalize();
+  // speed -> camera distance (100->60, 300->100), eased
+  const targetDist=clamp(60+(glider.gndspeed-100)*0.2, 60, 100);
+  camDistSmooth += (targetDist-camDistSmooth)*(1-Math.exp(-dt*1.5));
+  _camGoal.copy(rpos).addScaledVector(_cf,-camDistSmooth*0.95).addScaledVector(WORLD_UP,camDistSmooth*0.30);
+  camera.position.lerp(_camGoal, 1-Math.exp(-dt*1.6));         // smooth chase
+  _ctmp.copy(camera.position).sub(rpos); const cd=_ctmp.length();   // leash to eased distance (kills lag blowout)
+  if (cd>camDistSmooth) camera.position.copy(rpos).addScaledVector(_ctmp, camDistSmooth/cd);
+  const tY=terrainHeight(camera.position.x,camera.position.z)+22;
+  if (camera.position.y<tY) camera.position.y=tY;
+  _look.copy(rpos).addScaledVector(_cf,LOOK_AHEAD);
+  _ml.lookAt(camera.position,_look,_cUp); _cq.setFromRotationMatrix(_ml);
+  camera.quaternion.slerp(_cq, 1-Math.exp(-dt*2.2));           // smooth aim
+  const sn=clamp(invLerp(SPD_LO,SPD_HI,glider.gndspeed),0,1);
+  const fov=70+sn*16; camera.fov+=(fov-camera.fov)*Math.min(1,dt*4); camera.updateProjectionMatrix();
+  document.getElementById('vign').style.opacity=Math.max(0,(sn-0.5))*0.8;
+}
+function updateWings(dt){
+  if (!wingL) return;
+  const target=clamp(glider.gload-1, -1.2, 4)*WING_BEND_PER_G;   // excess-G -> upward bow
+  bendSmooth += (target-bendSmooth)*(1-Math.exp(-dt*9));         // springy ease
+  wingL.rotation.z=-(WING_BASE_DIH+bendSmooth);
+  wingR.rotation.z= (WING_BASE_DIH+bendSmooth);
+}
+
+/* ===================== HUD ===================== */
+const elSpd=document.getElementById('spd'), elAir=document.getElementById('air'), elAlt=document.getElementById('alt'),
+      elStall=document.getElementById('stall'), elWindArrow=document.getElementById('windarrow'), elWindSpd=document.getElementById('windspd');
+const WIND_SPEED=WIND.length(), WIND_ANG=Math.atan2(WIND.x,-WIND.z);
+elWindSpd.textContent=Math.round(WIND_SPEED);
+function updateHUD(){
+  elSpd.textContent=Math.round(glider.gndspeed);
+  elAir.textContent=Math.round(glider.airspeed);
+  elAlt.textContent=Math.round(glider.pos.y-spawnY);     // descent from start: 0 -> negative
+  elStall.classList.toggle('on', glider.stall>0.4);
+  const heading=Math.atan2(_f.x,-_f.z);
+  elWindArrow.setAttribute('transform','rotate('+((WIND_ANG-heading)*DEG).toFixed(1)+')');
+}
+
+/* ===================== LOOP ===================== */
+let last=performance.now(), acc=0;
+const _rp=new THREE.Vector3(), _rq=new THREE.Quaternion();
+function loop(now){
+  requestAnimationFrame(loop);
+  let frame=(now-last)/1000; last=now; if(!(frame>0))frame=0; frame=Math.min(frame,0.1);
+  if (state==='flying'){
+    acc+=frame; let guard=0;
+    while(acc>=FIXED && guard++<8){ prevPos.copy(glider.pos); prevQ.copy(glider.q); fixedStep(); acc-=FIXED; }
+    updateHUD(); updateTerrain();
+  }
+  const alpha = state==='flying' ? clamp(acc/FIXED,0,1) : 1;
+  _rp.lerpVectors(prevPos, glider.pos, alpha);
+  _rq.copy(prevQ).slerp(glider.q, alpha);
+  gliderGroup.position.copy(_rp); gliderGroup.quaternion.copy(_rq);
+  updateCamera(frame||FIXED, _rp, _rq);
+  updateWings(frame||FIXED);
+  sky.position.copy(camera.position);
+  updateAirParticles(frame||FIXED);
+  renderer.render(scene,camera);
+}
+addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
+
+// menu backdrop
+glider.pos.set(0, terrainHeight(0,-SPAWN_R)+1500, -SPAWN_R);
+{ const m=new THREE.Matrix4().lookAt(ZERO,new THREE.Vector3(0,-0.10,-1).normalize(),WORLD_UP); glider.q.setFromRotationMatrix(m); }
+prevPos.copy(glider.pos); prevQ.copy(glider.q);
+_f.set(0,0,-1).applyQuaternion(glider.q);
+updateTerrain();
+camera.position.set(0, glider.pos.y+10, 36); camera.lookAt(0, glider.pos.y-6, -40);
+requestAnimationFrame(loop);
+
+/* ===================== headless hooks ===================== */
+window.__swooper={
+  get state(){return state;}, get speed(){return glider.gndspeed;}, get airspeed(){return glider.airspeed;},
+  start(){ startFlight(); },
+  th(x,z){ return +terrainHeight(x,z).toFixed(0); },
+  camUpWorldY(){ return +(new THREE.Vector3(0,1,0).applyQuaternion(camera.quaternion).y).toFixed(3); },
+  camDist(){ return +camera.position.distanceTo(gliderGroup.position).toFixed(1); },
+  sim(n,h=0,v=0){
+    inputOverride={h,v}; let minA=999,maxA=-999;
+    for(let i=0;i<n;i++){ fixedStep(); const f=new THREE.Vector3(0,0,-1).applyQuaternion(glider.q);
+      const a=Math.acos(clamp(f.y,-1,1))*DEG; minA=Math.min(minA,a);maxA=Math.max(maxA,a); }
+    inputOverride=null;
+    const f=new THREE.Vector3(0,0,-1).applyQuaternion(glider.q), u=new THREE.Vector3(0,1,0).applyQuaternion(glider.q);
+    return { air:+glider.airspeed.toFixed(1), gnd:+glider.gndspeed.toFixed(1), alphaDeg:+(glider.alpha*DEG).toFixed(1),
+             betaDeg:+(lastBeta*DEG).toFixed(1), fwdY:+f.y.toFixed(3), upY:+u.y.toFixed(3), stall:+glider.stall.toFixed(2),
+             pitchRange:[+minA.toFixed(1),+maxA.toFixed(1)], heading:+Math.atan2(f.x,-f.z).toFixed(3),
+             y:+glider.pos.y.toFixed(0), agl:+(glider.pos.y-terrainHeight(glider.pos.x,glider.pos.z)).toFixed(0),
+             vY:+glider.vel.y.toFixed(1), gload:+glider.gload.toFixed(2) };
+  }
+};
+
+} catch(err){
+  const el=document.getElementById('loaderr'); el.style.display='flex';
+  el.innerHTML='<div><b>Не удалось запустить.</b><br>'+(err&&err.message?err.message:err)+'<br><br>Нужен WebGL и интернет (Three.js с CDN).</div>'; console.error(err);
+}
+</script>
+</body>
+</html>
