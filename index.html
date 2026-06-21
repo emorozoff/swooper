@@ -83,7 +83,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.25';
+const VERSION = '0.26';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -106,10 +106,10 @@ const CL_SLOPE = 6.5, CL_FP = 0.70;
 // higher critical AoA = more stall margin so a hard pull stays attached (max-G)
 // -> loops complete instead of mushing. stall now a low-speed phenomenon.
 const ALPHA_STALL = 0.36, ALPHA_BLEND = 0.045, ALPHA_TRIM = 0.045;
-// drag curve Cd(α). Modest CD0: keep the glide floaty so the craft drifts UP off
-// the steep slope (ground recedes below = endless descent, never a floor crash);
-// dive to skim. (Bigger wing already raised total drag via QA.)
-const CD0 = 0.120, CD_IND = 0.060, CD_STALL = 1.20;
+// drag curve Cd(α). Energy rework (v0.26): low parasitic CD0 -> high top speed
+// (dives really accelerate) + floaty efficient glide; low induced CD_IND
+// (high-aspect wing) -> pulling/looping/turning keeps speed. Loops still tight.
+const CD0 = 0.045, CD_IND = 0.022, CD_STALL = 1.20;
 // lateral
 const CY_BETA = 2.0;
 
@@ -131,16 +131,16 @@ const ROLL_DAMP = 2.7, PITCH_DAMP = 8.0, YAW_DAMP = 3.4;
 const ROLL_DAMP0 = 0.35, PITCH_DAMP0 = 0.50, YAW_DAMP0 = 0.45;
 // control authority reference (dynamic pressure where controls saturate)
 const REF_V = 130, QD_REF = QA*REF_V*REF_V, Q_CAP = 2.2;
-const MAXW = 7.0, INIT_SPEED = 120, AXIS_RATE = 6.0;
+const MAXW = 7.0, INIT_SPEED = 150, AXIS_RATE = 6.0;
 
 const SPD_LO = 90, SPD_HI = 250;     // camera/HUD speed normalization
 
 // cheap wing flex: wings hinge at the root, bow up ∝ aerodynamic load (G)
 const WING_BASE_DIH = 0.05, WING_BEND_PER_G = 0.05;
 
-// wind: light steady breeze toward +X, plus gentle gusts
+// wind: steady breeze toward +X, plus strong buffeting gusts + sharp squalls
 const WIND = new THREE.Vector3(35, 0, 0);
-const GUST_AMP = 3.5;
+const GUST_AMP = 14.0, SQUALL_AMP = 32.0, GUST_ROLL = 0.9;
 
 const clamp=(v,a,b)=> v<a?a:v>b?b:v;
 const invLerp=(a,b,v)=> (v-a)/(b-a);
@@ -206,6 +206,18 @@ function setColor(col,o,height,ny){
   col[o]=r; col[o+1]=g; col[o+2]=b;
 }
 const terrainMat=new THREE.MeshLambertMaterial({vertexColors:true, flatShading:true});
+// worldspace grid overlay -> the ground is easy to read (proximity / speed / relief)
+const GRID_SIZE=240;
+terrainMat.onBeforeCompile=(sh)=>{
+  sh.vertexShader='varying vec3 vWP;\n'+sh.vertexShader.replace(
+    '#include <begin_vertex>', '#include <begin_vertex>\n vWP=(modelMatrix*vec4(transformed,1.0)).xyz;');
+  sh.fragmentShader='varying vec3 vWP;\n'+sh.fragmentShader.replace('#include <dithering_fragment>',
+    'vec2 gc=vWP.xz/'+GRID_SIZE.toFixed(1)+';\n'+
+    'vec2 gd=abs(fract(gc-0.5)-0.5)/fwidth(gc);\n'+
+    'float ln=1.0-min(min(gd.x,gd.y),1.0);\n'+
+    'gl_FragColor.rgb=mix(gl_FragColor.rgb, gl_FragColor.rgb*0.45, ln*0.6);\n'+
+    '#include <dithering_fragment>');
+};
 const chunks=[];
 {
   const N=SEG+1, idx=[];
@@ -360,12 +372,14 @@ function fixedStep(){
   _r.set(1,0,0).applyQuaternion(glider.q);
   _u.set(0,1,0).applyQuaternion(glider.q);
 
-  // wind + gentle gusts (feeds aero -> craft bobs through real forces)
+  // wind + strong gusts + sharp squalls (feeds aero -> craft really rocks/sways)
   const t=simTime;
+  const sq=SQUALL_AMP*Math.pow(Math.max(0,Math.sin(t*0.32+0.5)),6);   // sharp gust front, peaks ~every 20s
+  const sqA=t*0.23;
   _wind.set(
-    WIND.x + GUST_AMP*(Math.sin(t*0.37)+0.6*Math.sin(t*0.91+1.3)),
-            GUST_AMP*0.4*(Math.sin(t*0.61+0.8)+0.5*Math.sin(t*1.23+2.1)),
-    WIND.z + GUST_AMP*(Math.sin(t*0.43+2.1)+0.6*Math.sin(t*1.07+0.5))
+    WIND.x + GUST_AMP*(Math.sin(t*0.37)+0.6*Math.sin(t*0.91+1.3)) + sq*Math.cos(sqA),
+             GUST_AMP*0.5*(Math.sin(t*0.61+0.8)+0.5*Math.sin(t*1.23+2.1)) + sq*0.45*Math.sin(t*0.8),
+    WIND.z + GUST_AMP*(Math.sin(t*0.43+2.1)+0.6*Math.sin(t*1.07+0.5)) + sq*Math.sin(sqA)
   );
   _vair.copy(glider.vel).sub(_wind);
   const V=_vair.length();
@@ -406,6 +420,9 @@ function fixedStep(){
     tRoll  += -(ROLL_DAMP*qs +ROLL_DAMP0 )*pRoll;
     tPitch += -(PITCH_DAMP*qs+PITCH_DAMP0)*qPitch;
     tYaw   += -(YAW_DAMP*qs  +YAW_DAMP0  )*rYaw;
+    // gusts hit the wings unevenly -> visible rolling/pitching buffeting (strong in squalls)
+    tRoll  += (GUST_ROLL*(Math.sin(t*1.7+0.3)+0.7*Math.sin(t*0.83+2.0)) + sq*0.018*Math.sin(t*1.1+0.6))*qs;
+    tPitch += (0.35*GUST_ROLL*Math.sin(t*1.3+1.1) + sq*0.012*Math.sin(t*0.9))*qs;
 
     _T.set(0,0,0);
     _T.addScaledVector(_f, tRoll/I_ROLL);
@@ -422,7 +439,7 @@ function fixedStep(){
   if (wl>MAXW){ glider.angVel.multiplyScalar(MAXW/wl); wl=MAXW; }
   if (wl>1e-6){ _dq.setFromAxisAngle(_axis.copy(glider.angVel).multiplyScalar(1/wl), wl*FIXED); glider.q.premultiply(_dq); glider.q.normalize(); }
 
-  if (glider.pos.y < terrainHeight(glider.pos.x,glider.pos.z)+18){ startFlight(); }
+  // terrain collision disabled for now — glider passes through (impacts return later)
 }
 
 /* ===================== CAMERA (chase, never inverts) ===================== */
@@ -443,7 +460,7 @@ function updateCamera(dt, rpos, rq){
   // limited tilt toward roll that FADES TO ZERO at inversion -> no jerk in barrel rolls
   _cUp.copy(_cp).sub(_lu).multiplyScalar(ROLL_TILT).add(_lu).normalize();
   // speed -> camera distance (100->60, 300->100), eased
-  const targetDist=clamp(60+(glider.gndspeed-100)*0.2, 60, 100);
+  const targetDist=clamp(54+(glider.gndspeed-100)*0.07, 54, 68);
   camDistSmooth += (targetDist-camDistSmooth)*(1-Math.exp(-dt*1.5));
   _camGoal.copy(rpos).addScaledVector(_cf,-camDistSmooth*0.95).addScaledVector(WORLD_UP,camDistSmooth*0.30);
   camera.position.lerp(_camGoal, 1-Math.exp(-dt*1.6));         // smooth chase
