@@ -12,16 +12,17 @@
   #app{ position:fixed; inset:0; }
   canvas{ display:block; }
   #hud{ position:fixed; inset:0; pointer-events:none; }
-  .panel{ position:absolute; padding:14px 18px; font-variant-numeric:tabular-nums; }
-  #readout{ top:0; left:0; line-height:1.45; }
-  #readout .big{ font-size:34px; font-weight:800; letter-spacing:.5px; text-shadow:0 2px 12px rgba(0,0,0,.5); }
-  #readout .row{ font-size:13px; font-weight:600; opacity:.82; letter-spacing:.3px; }
-  #readout .lbl{ display:inline-block; width:42px; opacity:.6; }
-  #stall{ color:#ff5d4d; font-weight:800; opacity:0; transition:opacity .1s; }
-  #stall.on{ opacity:1; }
-  #windbox{ right:0; bottom:0; text-align:center; line-height:1.2; }
-  #windbox .row{ font-size:11px; font-weight:700; opacity:.7; letter-spacing:1px; margin-top:2px; }
-  #tag{ bottom:0; left:0; font-size:12px; font-weight:700; letter-spacing:2px; opacity:.5; }
+  .inst-wrap{ position:absolute; }
+  .inst{ display:block; }
+  #i-hdg{ top:14px; left:50%; transform:translateX(-50%); }
+  #i-asi{ left:26px; top:50%; transform:translateY(-50%); }
+  #i-alt{ right:96px; top:50%; transform:translateY(-50%); }
+  #i-vario{ right:22px; top:50%; transform:translateY(-50%); }
+  #i-ah{ bottom:20px; left:50%; transform:translateX(-50%); }
+  #stallw{ position:absolute; top:74px; left:50%; transform:translateX(-50%); color:#ff5d4d; font-weight:800;
+    font-size:15px; letter-spacing:2px; opacity:0; transition:opacity .1s; text-shadow:0 1px 6px rgba(0,0,0,.6); }
+  #stallw.on{ opacity:1; }
+  #tag{ position:absolute; bottom:8px; left:12px; font-size:11px; font-weight:700; letter-spacing:2px; opacity:.4; }
   #vign{ position:fixed; inset:0; pointer-events:none; opacity:0;
     box-shadow: inset 0 0 24vmin 5vmin rgba(0,0,0,0.5); transition:opacity .12s linear; }
   .overlay{ position:fixed; inset:0; display:flex; flex-direction:column; align-items:center;
@@ -40,20 +41,13 @@
 <div id="app"></div>
 <div id="vign"></div>
 <div id="hud">
-  <div class="panel" id="readout">
-    <div class="big"><span id="spd">0</span> <span style="font-size:14px;opacity:.6;font-weight:700">SPD</span></div>
-    <div class="row"><span class="lbl">AIR</span><span id="air">0</span></div>
-    <div class="row"><span class="lbl">ALT</span><span id="alt">0</span></div>
-    <div class="row"><span id="stall">⚠ STALL</span></div>
-  </div>
-  <div class="panel" id="windbox">
-    <svg width="56" height="56" viewBox="-28 -28 56 56" aria-hidden="true">
-      <circle r="25" fill="none" stroke="rgba(255,255,255,.16)" stroke-width="2"/>
-      <g id="windarrow"><path d="M0,-17 L7,9 L0,3.5 L-7,9 Z" fill="#7fd0ff"/></g>
-    </svg>
-    <div class="row">WIND <span id="windspd">0</span></div>
-  </div>
-  <div class="panel" id="tag">swooper</div>
+  <div id="i-hdg" class="inst-wrap"></div>
+  <div id="i-asi" class="inst-wrap"></div>
+  <div id="i-alt" class="inst-wrap"></div>
+  <div id="i-vario" class="inst-wrap"></div>
+  <div id="i-ah" class="inst-wrap"></div>
+  <div id="stallw">⚠ STALL</div>
+  <div id="tag">swooper</div>
 </div>
 
 <div class="overlay" id="menu">
@@ -83,7 +77,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.26';
+const VERSION = '0.27';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -483,18 +477,97 @@ function updateWings(dt){
   wingR.rotation.z= (WING_BASE_DIH+bendSmooth);
 }
 
-/* ===================== HUD ===================== */
-const elSpd=document.getElementById('spd'), elAir=document.getElementById('air'), elAlt=document.getElementById('alt'),
-      elStall=document.getElementById('stall'), elWindArrow=document.getElementById('windarrow'), elWindSpd=document.getElementById('windspd');
-const WIND_SPEED=WIND.length(), WIND_ANG=Math.atan2(WIND.x,-WIND.z);
-elWindSpd.textContent=Math.round(WIND_SPEED);
+/* ===================== HUD — glass-cockpit instruments ===================== */
+const NS='http://www.w3.org/2000/svg';
+function E(t,a,p){ const e=document.createElementNS(NS,t); for(const k in a)e.setAttribute(k,a[k]); if(p)p.appendChild(e); return e; }
+const C_AMBER='#e8b04b', C_INK='#0c1014', C_CREAM='#eae4d6', C_BG='rgba(12,16,20,0.30)', AH_SIGN=1;
+const stallW=document.getElementById('stallw');
+const MONO='ui-monospace,SFMono-Regular,Menlo,monospace';
+
+// ---- heading ribbon ----
+const HW=480, HPX=2.9;
+const hsvg=E('svg',{viewBox:`0 0 ${HW} 58`,width:HW,height:58,class:'inst'},document.getElementById('i-hdg'));
+E('rect',{x:0,y:18,width:HW,height:24,rx:4,fill:C_BG},hsvg);
+const hcl=E('clipPath',{id:'hcl'},hsvg); hcl.appendChild(E('rect',{x:6,y:18,width:HW-12,height:24}));
+const hG=E('g',{'clip-path':'url(#hcl)'},hsvg);
+const hT=[]; for(let i=0;i<74;i++){ const ln=E('line',{stroke:C_CREAM,'stroke-width':1.2},hG); const tx=E('text',{fill:C_CREAM,'font-size':11,'text-anchor':'middle','font-family':MONO},hG); hT.push({ln,tx}); }
+E('polygon',{points:`${HW/2-6},16 ${HW/2+6},16 ${HW/2},24`,fill:C_AMBER},hsvg);
+E('rect',{x:HW/2-23,y:43,width:46,height:14,rx:3,fill:C_INK,stroke:C_AMBER,'stroke-width':1},hsvg);
+const hVal=E('text',{x:HW/2,y:53,'text-anchor':'middle','font-size':12.5,fill:C_AMBER,'font-weight':600,'font-family':MONO},hsvg);
+function updHdg(hdg){
+  for(let i=0;i<hT.length;i++){
+    const d=Math.floor((hdg-90)/5)*5+i*5, x=HW/2+(d-hdg)*HPX, t=hT[i];
+    if(x<8||x>HW-8){ t.ln.setAttribute('opacity',0); t.tx.setAttribute('opacity',0); continue; }
+    const maj=(((d%30)+30)%30)===0;
+    t.ln.setAttribute('x1',x); t.ln.setAttribute('x2',x); t.ln.setAttribute('y1',20); t.ln.setAttribute('y2',maj?32:27); t.ln.setAttribute('opacity',0.85);
+    if(maj){ const dd=((d%360)+360)%360; t.tx.textContent=dd===0?'N':dd===90?'E':dd===180?'S':dd===270?'W':''+dd; t.tx.setAttribute('x',x); t.tx.setAttribute('y',41); t.tx.setAttribute('opacity',0.95); } else t.tx.setAttribute('opacity',0);
+  }
+  hVal.textContent=(''+Math.round(((hdg%360)+360)%360)).padStart(3,'0');
+}
+
+// ---- vertical tape (airspeed / altitude) ----
+function vtape(elId,o){
+  const W=o.W,H=300,cy=H/2;
+  const svg=E('svg',{viewBox:`0 0 ${W} ${H}`,width:W,height:H,class:'inst'},document.getElementById(elId));
+  E('rect',{x:0,y:16,width:W,height:H-32,rx:4,fill:C_BG},svg);
+  const cl=E('clipPath',{id:elId+'cl'},svg); cl.appendChild(E('rect',{x:0,y:16,width:W,height:H-32}));
+  const g=E('g',{'clip-path':`url(#${elId}cl)`},svg);
+  const ticks=[]; for(let i=0;i<34;i++){ const ln=E('line',{stroke:C_CREAM,'stroke-width':1.1},g); const tx=E('text',{fill:C_CREAM,'font-size':10.5,'text-anchor':'end','font-family':MONO},g); const bd=o.bands?E('rect',{x:W-4,width:4},g):null; ticks.push({ln,tx,bd}); }
+  E('polygon',{points:`3,${cy} 13,${cy-9} ${W-2},${cy-9} ${W-2},${cy+9} 13,${cy+9}`,fill:C_INK,stroke:C_AMBER,'stroke-width':1.3},svg);
+  const val=E('text',{x:W-5,y:cy+4,'text-anchor':'end','font-size':14,fill:'#fff','font-weight':600,'font-family':MONO},svg);
+  E('text',{x:W/2,y:12,'text-anchor':'middle','font-size':9.5,fill:C_CREAM,opacity:0.85,'font-family':MONO},svg).textContent=o.unit;
+  return {o,cy,H,W,ticks,val,numX:W-9,tx1:W-22,tx2:W-12};
+}
+function updVtape(T,value){
+  const o=T.o, cy=T.cy, st=o.step, px=o.px;
+  for(let i=0;i<T.ticks.length;i++){
+    const v=Math.floor((value-o.span)/st)*st+i*st, y=cy-(v-value)*px, t=T.ticks[i];
+    if(y<18||y>T.H-18){ t.ln.setAttribute('opacity',0); t.tx.setAttribute('opacity',0); if(t.bd)t.bd.setAttribute('opacity',0); continue; }
+    const maj=(((v%o.lab)+o.lab)%o.lab)===0;
+    t.ln.setAttribute('x1',maj?T.tx1:T.tx1+6); t.ln.setAttribute('x2',T.tx2); t.ln.setAttribute('y1',y); t.ln.setAttribute('y2',y); t.ln.setAttribute('opacity',0.8);
+    if(maj){ t.tx.textContent=v; t.tx.setAttribute('x',T.numX); t.tx.setAttribute('y',y+3.5); t.tx.setAttribute('opacity',0.92); } else t.tx.setAttribute('opacity',0);
+    if(t.bd){ const c=v>265?'#d9534f':v>190?'#e0b552':'#5aa35a'; t.bd.setAttribute('y',y-px*st/2); t.bd.setAttribute('height',px*st+1); t.bd.setAttribute('fill',c); t.bd.setAttribute('opacity',0.92); }
+  }
+  T.val.textContent=Math.round(value);
+}
+const asi=vtape('i-asi',{W:74,step:10,px:1.7,span:90,lab:20,unit:'km/h',bands:true});
+const alti=vtape('i-alt',{W:80,step:50,px:0.16,span:950,lab:200,unit:'m'});
+
+// ---- variometer ----
+const VW=58,VH=210,VCY=VH/2,VPX=13;
+const vsvg=E('svg',{viewBox:`0 0 ${VW} ${VH}`,width:VW,height:VH,class:'inst'},document.getElementById('i-vario'));
+E('rect',{x:8,y:16,width:VW-12,height:VH-32,rx:4,fill:C_BG},vsvg);
+E('text',{x:(VW+8)/2,y:12,'text-anchor':'middle','font-size':9.5,fill:C_CREAM,opacity:0.85,'font-family':MONO},vsvg).textContent='VARIO';
+E('text',{x:(VW+8)/2,y:VH-5,'text-anchor':'middle','font-size':9,fill:C_CREAM,opacity:0.7,'font-family':MONO},vsvg).textContent='m/s';
+for(let v=-6;v<=6;v+=2){ const y=VCY-v*VPX; E('line',{x1:VW-28,y1:y,x2:VW-18,y2:y,stroke:C_CREAM,'stroke-width':1.1,opacity:0.8},vsvg); E('text',{x:VW-31,y:y+3,'text-anchor':'end','font-size':9.5,fill:C_CREAM,opacity:0.85,'font-family':MONO},vsvg).textContent=(v>0?'+':'')+v; }
+E('line',{x1:VW-28,y1:VCY,x2:VW-15,y2:VCY,stroke:C_CREAM,'stroke-width':1.6,opacity:0.9},vsvg);
+const vNeedle=E('polygon',{points:`${VW-18},${VCY} ${VW-9},${VCY-5} ${VW-9},${VCY+5}`,fill:C_AMBER},vsvg);
+const vVal=E('text',{x:VW-3,y:VCY+4,'text-anchor':'end','font-size':12,fill:C_AMBER,'font-weight':600,'font-family':MONO},vsvg);
+function updVario(ms){ const c=Math.max(-6,Math.min(6,ms)), y=VCY-c*VPX; vNeedle.setAttribute('points',`${VW-18},${y} ${VW-9},${y-5} ${VW-9},${y+5}`); vVal.setAttribute('y',y+4); vVal.textContent=(ms>=0?'+':'')+ms.toFixed(1); }
+
+// ---- artificial horizon ----
+const AHsz=132, AC=AHsz/2, AHR=56, AHP=1.7;
+const ahsvg=E('svg',{viewBox:`0 0 ${AHsz} ${AHsz}`,width:AHsz,height:AHsz,class:'inst'},document.getElementById('i-ah'));
+const ahcl=E('clipPath',{id:'ahcl'},ahsvg); ahcl.appendChild(E('circle',{cx:AC,cy:AC,r:AHR}));
+const ahG=E('g',{'clip-path':'url(#ahcl)'},ahsvg);
+const ahDisc=E('g',{},ahG);
+E('rect',{x:-AHsz,y:-AHsz*1.6,width:AHsz*3,height:AHsz*1.6+AC,fill:'#4f86bf'},ahDisc);
+E('rect',{x:-AHsz,y:AC,width:AHsz*3,height:AHsz*1.8,fill:'#7a5536'},ahDisc);
+E('line',{x1:-AHsz,y1:AC,x2:AHsz*2,y2:AC,stroke:C_CREAM,'stroke-width':1.5},ahDisc);
+for(let p=-30;p<=30;p+=10){ if(p===0)continue; const y=AC-p*AHP, w=(p%20===0)?20:12; E('line',{x1:AC-w,y1:y,x2:AC+w,y2:y,stroke:C_CREAM,'stroke-width':1,opacity:0.85},ahDisc); }
+E('circle',{cx:AC,cy:AC,r:AHR,fill:'none',stroke:C_INK,'stroke-width':3,opacity:0.55},ahsvg);
+E('circle',{cx:AC,cy:AC,r:AHR,fill:'none',stroke:C_CREAM,'stroke-width':1,opacity:0.6},ahsvg);
+for(const b of [-60,-45,-30,-20,-10,0,10,20,30,45,60]){ const a=(b-90)*Math.PI/180, r2=AHR-(b%30===0?9:5); E('line',{x1:AC+Math.cos(a)*AHR,y1:AC+Math.sin(a)*AHR,x2:AC+Math.cos(a)*r2,y2:AC+Math.sin(a)*r2,stroke:C_CREAM,'stroke-width':1.1,opacity:0.7},ahsvg); }
+E('polygon',{points:`${AC},${AC-AHR+2} ${AC-5},${AC-AHR+11} ${AC+5},${AC-AHR+11}`,fill:C_AMBER},ahsvg);
+E('path',{d:`M${AC-28},${AC} h17 l0,5 M${AC+28},${AC} h-17 l0,5`,stroke:C_AMBER,'stroke-width':2.4,fill:'none'},ahsvg);
+E('circle',{cx:AC,cy:AC,r:2.3,fill:C_AMBER},ahsvg);
+function updAH(pitchDeg,bankDeg){ ahDisc.setAttribute('transform',`rotate(${bankDeg} ${AC} ${AC}) translate(0 ${pitchDeg*AHP})`); }
+
 function updateHUD(){
-  elSpd.textContent=Math.round(glider.gndspeed);
-  elAir.textContent=Math.round(glider.airspeed);
-  elAlt.textContent=Math.round(glider.pos.y-spawnY);     // descent from start: 0 -> negative
-  elStall.classList.toggle('on', glider.stall>0.4);
-  const heading=Math.atan2(_f.x,-_f.z);
-  elWindArrow.setAttribute('transform','rotate('+((WIND_ANG-heading)*DEG).toFixed(1)+')');
+  const air=glider.airspeed, alt=glider.pos.y-spawnY, hdg=Math.atan2(_f.x,-_f.z)*DEG;
+  const pitchDeg=Math.asin(clamp(_f.y,-1,1))*DEG, bankDeg=Math.atan2(_r.y,_u.y)*DEG;
+  updHdg(hdg); updVtape(asi,air); updVtape(alti,alt); updVario(glider.vel.y*0.1); updAH(pitchDeg, AH_SIGN*bankDeg);
+  stallW.classList.toggle('on', glider.stall>0.4);
 }
 
 /* ===================== LOOP ===================== */
