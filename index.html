@@ -130,7 +130,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.52';
+const VERSION = '0.53';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -581,7 +581,7 @@ let brkPoints, brkMat;
 }
 function updateBrakeFX(dt){
   dt=Math.min(dt||0.016,0.05);
-  brkMat.opacity=0.24*brake;
+  brkMat.opacity=0.15*brake;
   if(brake<0.02) return;
   const sp=brkPoints._spawn;
   for(let i=0;i<BRK_N;i++){ const o=i*3;
@@ -599,7 +599,7 @@ let trailsOn=true;
 const TRAIL_N=46, HALF_SPAN=CLASSIC.span/2;
 const trW=new Float32Array(TRAIL_N), trA=new Float32Array(TRAIL_N);   // static width/alpha vs position
 for(let i=0;i<TRAIL_N;i++){ const u=(TRAIL_N-1-i)/(TRAIL_N-1);        // u: 0 at tip (newest) -> 1 at oldest
-  trW[i]=0.05 + 1.55*Math.min(1,u/0.6);
+  trW[i]=0.02 + 0.42*Math.min(1,u/0.6);                              // much thinner ribbon
   trA[i]=Math.min(1,u/0.16) * (1-smoothstep01(0.72,1.0,u)); }
 function makeTrail(){
   const cpos=new Float32Array(TRAIL_N*3), vpos=new Float32Array(TRAIL_N*2*3), valpha=new Float32Array(TRAIL_N*2);
@@ -656,7 +656,7 @@ function clearanceNow(){                          // min terrain clearance under
   m=Math.min(m, (p.y+_f.y*70)-terrainHeight(p.x+_f.x*70, p.z+_f.z*70));
   return m;
 }
-function crash(){ if(state!=='flying') return; state='crashed'; silenceAudio();
+function crash(){ if(state!=='flying') return; state='crashed'; silenceAudio(); dragging=false;
   document.getElementById('vign').style.opacity=0; nearMiss=0;
   crashEl.classList.remove('hidden'); }
 
@@ -674,11 +674,16 @@ addEventListener('keydown',e=>{ if(e.target&&e.target.tagName==='INPUT') return;
   else if(e.code==='Space'){ if(state==='menu'||state==='crashed') startFlight(); } });                       // Space held = airbrakes in flight
 addEventListener('keyup',e=>{ keys[e.code]=false; });
 addEventListener('blur',()=>{ for(const k in keys) keys[k]=false; dragging=false; });
-// C4 mouse-orbit camera: drag to look around, eases back to chase after idle
-renderer.domElement.addEventListener('pointerdown',e=>{ if(state==='flying'||state==='paused'){ dragging=true; _pmx=e.clientX; _pmy=e.clientY; } });
-addEventListener('pointerup',()=>{ dragging=false; });
+// C4 mouse-orbit camera: drag to look around, eases back to chase after idle.
+// setPointerCapture guarantees a pointerup/cancel even if released outside the window -> drag never sticks.
+const _cv=renderer.domElement;
+function endDrag(e){ dragging=false; if(e&&e.pointerId!=null&&_cv.hasPointerCapture&&_cv.hasPointerCapture(e.pointerId)){ try{ _cv.releasePointerCapture(e.pointerId); }catch(_){} } }
+_cv.addEventListener('pointerdown',e=>{ if(state==='flying'||state==='paused'){ dragging=true; _pmx=e.clientX; _pmy=e.clientY; try{ _cv.setPointerCapture(e.pointerId); }catch(_){} } });
+_cv.addEventListener('pointerup',endDrag);
+_cv.addEventListener('pointercancel',endDrag);
 addEventListener('pointermove',e=>{ if(!dragging) return;
-  camOrbitAz=clamp(camOrbitAz-(e.clientX-_pmx)*0.009,-3.4,3.4); camOrbitEl=clamp(camOrbitEl+(e.clientY-_pmy)*0.006,-1.1,1.3);   // ±195° -> can swing round to the nose
+  if(state!=='flying'&&state!=='paused'){ dragging=false; return; }                  // never keep dragging off the flight view
+  camOrbitAz=clamp(camOrbitAz-(e.clientX-_pmx)*0.009,-3.4,3.4); camOrbitEl=clamp(camOrbitEl+(e.clientY-_pmy)*0.006,-1.1,1.1);   // ±195° az; el capped <1.15 to dodge the overhead gimbal
   _pmx=e.clientX; _pmy=e.clientY; camIdle=0; });
 const menuEl=document.getElementById('menu'), pauseChip=document.getElementById('pausechip'), settingsEl=document.getElementById('settings');
 document.getElementById('play').onclick=startFlight;
@@ -690,7 +695,7 @@ function setAudioOn(v){ audioOn=v; try{ localStorage.setItem('swooper_mute', v?'
 function setVarioOn(v){ varioOn=v; try{ localStorage.setItem('swooper_vario', v?'0':'1'); }catch(e){} const c=document.getElementById('set-vario'); if(c)c.checked=v; }
 // Space: freeze-frame pause (mute, no overlay so you can study the view).  Esc: settings menu.
 function pauseFreeze(){ if(state!=='flying') return; state='paused'; pauseChip.classList.remove('hidden'); silenceAudio(); }
-function openSettings(){ if(state!=='flying'&&state!=='paused') return; state='settings';
+function openSettings(){ if(state!=='flying'&&state!=='paused') return; state='settings'; dragging=false;
   pauseChip.classList.add('hidden'); settingsEl.classList.remove('hidden'); silenceAudio();
   document.getElementById('set-sound').checked=audioOn;
   document.getElementById('set-vario').checked=varioOn;
@@ -731,7 +736,7 @@ function startFlight(){
   rawH=rawV=horizontalInput=verticalInput=0;
   prevPos.copy(glider.pos); prevQ.copy(glider.q);
   updateTerrain(); cloudCX=null; updateClouds();
-  brake=0; nearMiss=0; camOrbitAz=0; camOrbitEl=0; camIdle=0; dragging=false;
+  brake=0; nearMiss=0; camOrbitAz=0; camOrbitEl=0; camIdle=0; dragging=false; camBase.set(NaN,0,0);
   seedTrail(trailR,1,glider.pos,glider.q); seedTrail(trailL,-1,glider.pos,glider.q);
   previewMode=false;
   state='flying'; menuEl.classList.add('hidden'); pauseChip.classList.add('hidden'); settingsEl.classList.add('hidden'); crashEl.classList.add('hidden');
@@ -857,9 +862,10 @@ const _camGoal=new THREE.Vector3(), _look=new THREE.Vector3(), _cUp=new THREE.Ve
       _off=new THREE.Vector3(), _oax=new THREE.Vector3();
 const LOOK_AHEAD=42, ROLL_TILT=0.20;     // camera tilts ≤~14° with bank, fades to 0 inverted (smooth thru rolls)
 let camDistSmooth=60;                     // speed-based camera distance, eased over time
+const camBase=new THREE.Vector3(NaN,0,0); // orbit-free smoothed follow position (re-inits on NaN)
 function updateCamera(dt, rpos, rq){
   // mouse-orbit idle auto-return: hold the look for ~1.2s after the last drag, then ease back to chase
-  if(dragging) camIdle=0; else { camIdle+=dt; if(camIdle>1.2){ const k=1-Math.exp(-dt*1.8);
+  if(dragging) camIdle=0; else { camIdle+=dt; if(camIdle>1.8){ const k=1-Math.exp(-dt*1.6);
     camOrbitAz-=camOrbitAz*k; camOrbitEl-=camOrbitEl*k; if(Math.abs(camOrbitAz)<1e-3)camOrbitAz=0; if(Math.abs(camOrbitEl)<1e-3)camOrbitEl=0; } }
   _cf.set(0,0,-1).applyQuaternion(rq);
   _cu2.set(0,1,0).applyQuaternion(rq);
@@ -875,20 +881,28 @@ function updateCamera(dt, rpos, rq){
   // speed -> camera distance (100->60, 300->100), eased
   const targetDist=clamp(30+(glider.gndspeed-100)*0.07, 36, 44);   // closer (min 36 so slow flight isn't too tight)
   camDistSmooth += (targetDist-camDistSmooth)*(1-Math.exp(-dt*1.5));
-  // base chase offset, then optional mouse-orbit yaw/pitch around the craft
-  _off.copy(_cf).multiplyScalar(-camDistSmooth*0.95).addScaledVector(WORLD_UP,camDistSmooth*0.30);
+  // 1) camBase = orbit-FREE smoothed follow position. Its goal is always BEHIND the craft, so it never
+  //    accumulates orbit -> the rotation below can't compound/spin.
+  _camGoal.copy(rpos).addScaledVector(_cf,-camDistSmooth*0.95).addScaledVector(WORLD_UP,camDistSmooth*0.30);
+  if(isNaN(camBase.x)) camBase.copy(_camGoal);
+  camBase.lerp(_camGoal, 1-Math.exp(-dt*1.6));
+  _ctmp.copy(camBase).sub(rpos); const cd=_ctmp.length();          // leash to eased distance (kills lag blowout)
+  if (cd>camDistSmooth) camBase.copy(rpos).addScaledVector(_ctmp, camDistSmooth/cd);
+  // 2) final camera = camBase rigidly orbited around the craft by the CURRENT az/el -> INSTANT, crisp, no spin
+  _off.copy(camBase).sub(rpos);
   if(camOrbitAz!==0||camOrbitEl!==0){ _off.applyAxisAngle(WORLD_UP,camOrbitAz);
     _oax.crossVectors(_off,WORLD_UP); if(_oax.lengthSq()>1e-6){ _oax.normalize(); _off.applyAxisAngle(_oax,camOrbitEl); } }
-  _camGoal.copy(rpos).add(_off);
-  camera.position.lerp(_camGoal, 1-Math.exp(-dt*1.6));         // smooth chase
-  _ctmp.copy(camera.position).sub(rpos); const cd=_ctmp.length();   // leash to eased distance (kills lag blowout)
-  if (cd>camDistSmooth) camera.position.copy(rpos).addScaledVector(_ctmp, camDistSmooth/cd);
+  camera.position.copy(rpos).add(_off);
   const tY=terrainHeight(camera.position.x,camera.position.z)+22;
   if (camera.position.y<tY) camera.position.y=tY;
   const orbAmt=clamp((Math.abs(camOrbitAz)+Math.abs(camOrbitEl))/0.5,0,1);   // look at the craft itself while orbiting
   _look.copy(rpos).addScaledVector(_cf,LOOK_AHEAD*(1-orbAmt));
+  // gimbal guard: if the view direction is nearly (anti)parallel to up (camera orbited overhead), re-orthogonalize
+  _ctmp.copy(_look).sub(camera.position);
+  if(_ctmp.lengthSq()>1e-9){ _ctmp.normalize(); const dt2=_ctmp.dot(_cUp);
+    if(Math.abs(dt2)>0.985){ _cUp.addScaledVector(_ctmp,-dt2); if(_cUp.lengthSq()<1e-6) _cUp.copy(_lu); _cUp.normalize(); } }
   _ml.lookAt(camera.position,_look,_cUp); _cq.setFromRotationMatrix(_ml);
-  camera.quaternion.slerp(_cq, 1-Math.exp(-dt*2.2));           // smooth aim
+  camera.quaternion.slerp(_cq, 1-Math.exp(-dt*((dragging||orbAmt>0.01)?9.0:2.2)));   // crisp aim while orbiting, smooth otherwise
   const sn=clamp(invLerp(SPD_LO,SPD_HI,glider.gndspeed),0,1);
   const fov=70+sn*16; camera.fov+=(fov-camera.fov)*Math.min(1,dt*4); camera.updateProjectionMatrix();
   document.getElementById('vign').style.opacity=Math.max(0,(sn-0.5))*0.8;   // speed vignette only — near-miss is audio-only
@@ -1110,6 +1124,11 @@ window.__swooper={
   trailTipDist(){ const c=trailR.cpos,n=c.length; return +Math.hypot(c[n-3]-glider.pos.x,c[n-2]-glider.pos.y,c[n-3+2]-glider.pos.z).toFixed(2); },
   varioState(){ return varioOn; }, brakeFxOpacity(){ return +brkMat.opacity.toFixed(3); },
   orbit(az,el){ camOrbitAz=az; camOrbitEl=el; camIdle=0; }, camAz(){ return +camOrbitAz.toFixed(3); },
+  dragState(){ return {dragging, camIdle:+camIdle.toFixed(2), az:+camOrbitAz.toFixed(2), el:+camOrbitEl.toFixed(2)}; },
+  camRel(){ const c=camera.position, g=gliderGroup.position;
+    const f=new THREE.Vector3(0,0,-1).applyQuaternion(gliderGroup.quaternion), rt=new THREE.Vector3(1,0,0).applyQuaternion(gliderGroup.quaternion);
+    const d=new THREE.Vector3().subVectors(c,g);
+    return {dist:+d.length().toFixed(1), behind:+(-d.dot(f)).toFixed(1), side:+d.dot(rt).toFixed(1), up:+d.y.toFixed(1), az:+camOrbitAz.toFixed(2), el:+camOrbitEl.toFixed(2)}; },
   audioState(){ return audioOn; },
   sunView(y=7000){ previewMode=true; gliderGroup.position.set(0,-99999,0); camera.position.set(0,y,0); camera.lookAt(new THREE.Vector3(0,y,0).add(SUN_DIR.clone().multiplyScalar(1000))); },
   camUpWorldY(){ return +(new THREE.Vector3(0,1,0).applyQuaternion(camera.quaternion).y).toFixed(3); },
