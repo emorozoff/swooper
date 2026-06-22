@@ -130,7 +130,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.53';
+const VERSION = '0.54';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -156,7 +156,7 @@ const ALPHA_STALL = 0.36, ALPHA_BLEND = 0.045, ALPHA_TRIM = 0.045;
 // drag curve Cd(α). Energy rework (v0.26): low parasitic CD0 -> high top speed
 // (dives really accelerate) + floaty efficient glide; low induced CD_IND
 // (high-aspect wing) -> pulling/looping/turning keeps speed. Loops still tight.
-const CD0 = 0.045, CD_IND = 0.022, CD_STALL = 1.20;
+const CD0 = 0.030, CD_IND = 0.022, CD_STALL = 1.20;   // lowered 0.045->0.030: slipperier -> dives push past 300 (low-speed accel ~unchanged, drag is a small % of gravity there)
 // lateral
 const CY_BETA = 2.0;
 
@@ -183,8 +183,12 @@ const ROLL_DAMP0 = 0.35, PITCH_DAMP0 = 0.50, YAW_DAMP0 = 0.45;
 const REF_V = 130, QD_REF = QA*REF_V*REF_V, Q_CAP = 2.2;
 const MAXW = 7.0, INIT_SPEED = 150, AXIS_RATE = 6.0;
 
-const SPD_LO = 90, SPD_HI = 250;     // camera/HUD speed normalization
-const ALT_OFFSET = 1500;             // world-Y -> realistic altimeter reading (valleys ~+400m, spawn ~4500m, peaks ~6600m)
+const SPD_LO = 90, SPD_HI = 250;     // camera/HUD speed normalization (world units — internal)
+// ONE scale ties all instruments together: 1 world unit = MPS metres. Altitude, vertical speed
+// (vario) and airspeed are ALL derived from this, so d(altitude)/dt == vario by construction.
+// MPS≈0.27 -> cruise ~40 m/s (~145 km/h), dives ~70-120 m/s; ALT_BASE lifts the readout into a
+// realistic high-mountain band (~2200 valleys / ~3200 spawn / ~3900 peaks).
+const MPS = 0.27, ALT_BASE = 2500;
 
 // wind: per-seed prevailing breeze (direction+strength set near windBaseAt) + buffeting gusts + sharp squalls
 const GUST_AMP = 9.0, SQUALL_AMP = 18.0, GUST_ROLL = 0.5;
@@ -957,11 +961,11 @@ function updVtape(T,value){
     const maj=(((v%o.lab)+o.lab)%o.lab)===0;
     t.ln.setAttribute('x1',maj?T.tx1:T.tx1+6); t.ln.setAttribute('x2',T.tx2); t.ln.setAttribute('y1',y); t.ln.setAttribute('y2',y); t.ln.setAttribute('opacity',0.8);
     if(maj){ t.tx.textContent=v; t.tx.setAttribute('x',T.numX); t.tx.setAttribute('y',y+3.5); t.tx.setAttribute('opacity',0.92); } else t.tx.setAttribute('opacity',0);
-    if(t.bd){ const c=v>265?'#d9534f':v>190?'#e0b552':'#5aa35a'; t.bd.setAttribute('y',y-px*st/2); t.bd.setAttribute('height',px*st+1); t.bd.setAttribute('fill',c); t.bd.setAttribute('opacity',0.92); }
+    if(t.bd){ const c=v>o.bandHi?'#d9534f':v>o.bandMid?'#e0b552':'#5aa35a'; t.bd.setAttribute('y',y-px*st/2); t.bd.setAttribute('height',px*st+1); t.bd.setAttribute('fill',c); t.bd.setAttribute('opacity',0.92); }
   }
   T.val.textContent=Math.round(value);
 }
-const asi=vtape('i-asi',{W:74,step:10,px:1.7,span:90,lab:20,unit:'km/h',bands:true});
+const asi=vtape('i-asi',{W:74,step:5,px:2.4,span:56,lab:20,unit:'m/s',bands:true,bandMid:55,bandHi:80});
 const alti=vtape('i-alt',{W:80,step:50,px:0.16,span:950,lab:200,unit:'m'});
 
 // ---- variometer (scale + moving needle, fixed digital readout at the bottom) ----
@@ -991,17 +995,17 @@ E('polygon',{points:`${WC},${WCY-WR+3} ${WC-5},${WCY-WR+13} ${WC+5},${WCY-WR+13}
 E('circle',{cx:WC,cy:WCY,r:2.4,fill:C_INK,stroke:C_AMBER,'stroke-width':1},wsvg);   // hub
 E('rect',{x:WC-23,y:WSZ+9,width:46,height:17,rx:3,fill:C_INK,stroke:C_AMBER,'stroke-width':1},wsvg);
 const wVal=E('text',{x:WC,y:WSZ+21,'text-anchor':'middle','font-size':11.5,fill:C_AMBER,'font-weight':600,'font-family':MONO},wsvg);
-wVal.textContent=Math.round(WIND_MEAN);                      // initial (per-seed mean) before flight
+wVal.textContent=Math.round(WIND_MEAN*MPS);                  // initial (per-seed mean) before flight — m/s
 const _wbHud=new THREE.Vector3();
 function updWind(hdg){                                        // live LOCAL wind (direction + strength)
   windSteeredAt(glider.pos.x, glider.pos.z, glider.pos.y, simTime, _wbHud);
   const wAng=Math.atan2(_wbHud.x,-_wbHud.z)*DEG, mag=Math.hypot(_wbHud.x,_wbHud.z);
   wArrow.setAttribute('transform',`rotate(${(wAng-hdg).toFixed(1)} ${WC} ${WCY})`);
-  wVal.textContent=Math.round(mag);
+  wVal.textContent=Math.round(mag*MPS);
 }
 
 function updateHUD(dt){
-  const air=glider.airspeed, alt=glider.pos.y+ALT_OFFSET, hdg=Math.atan2(_f.x,-_f.z)*DEG, vario=glider.vel.y*0.1;
+  const air=glider.airspeed*MPS, alt=glider.pos.y*MPS+ALT_BASE, hdg=Math.atan2(_f.x,-_f.z)*DEG, vario=glider.vel.y*MPS;
   updHdg(hdg); updVtape(asi,air); updVtape(alti,alt); updVario(vario); updWind(hdg);
   stallW.classList.toggle('on', glider.stall>0.4);
   updateAudio(); updateVarioSound(vario, dt||FIXED);
@@ -1116,6 +1120,7 @@ window.__swooper={
   windCompare(x,z,y=2900){ const a=windBaseAt(x,z,simTime,new THREE.Vector3()), b=windSteeredAt(x,z,y,simTime,new THREE.Vector3()); return {base:{mag:+Math.hypot(a.x,a.z).toFixed(1),ang:+(Math.atan2(a.x,-a.z)*DEG).toFixed(0)}, steered:{mag:+Math.hypot(b.x,b.z).toFixed(1)}}; },
   findThermal(){ for(let R=1700;R<16000;R+=1700)for(let a=0;a<16;a++){ const x=Math.round(Math.cos(a/16*6.28)*R/1700)*1700, z=Math.round(Math.sin(a/16*6.28)*R/1700)*1700, s=thermalStrength(x,z), g=terrainHeight(x,z); if(s>0.5&&g<2000) return {x,z,s:+s.toFixed(2),g:Math.round(g)}; } return null; },
   brakeNow(){ return +brake.toFixed(3); },
+  hud(){ return { speedMS:+(glider.airspeed*MPS).toFixed(1), altM:+(glider.pos.y*MPS+ALT_BASE).toFixed(1), varioMS:+(glider.vel.y*MPS).toFixed(2) }; },
   spoilerDeg(){ return +(flex.spoilerR.rotation.x*DEG).toFixed(1); },
   nearMissNow(){ return +nearMiss.toFixed(3); },
   clearance(){ return +clearanceNow().toFixed(0); },
