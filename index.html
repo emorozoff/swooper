@@ -40,6 +40,12 @@
   .play{ font:inherit; font-weight:800; font-size:16px; padding:12px 46px; border-radius:3px;
     border:1px solid #e8b04b; background:#e8b04b; color:#16100a; cursor:pointer; letter-spacing:3px; }
   .play:hover{ filter:brightness(1.08); }
+  .seedrow{ margin-top:18px; font-family:ui-monospace,monospace; font-size:12px; letter-spacing:2px; color:#eae4d6; opacity:.8; display:flex; gap:6px; align-items:center; justify-content:center; }
+  .seedrow input{ width:96px; font:inherit; letter-spacing:1px; text-align:center; color:#e8b04b; background:rgba(12,16,20,.5);
+    border:1px solid rgba(232,176,75,.4); border-radius:3px; padding:4px 6px; outline:none; }
+  .seedrow button{ font-size:13px; line-height:1; padding:5px 8px; border-radius:3px; cursor:pointer;
+    border:1px solid rgba(232,176,75,.4); background:rgba(12,16,20,.5); color:#eae4d6; }
+  .seedrow button:hover{ border-color:#e8b04b; }
   #loaderr{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; text-align:center; padding:30px; z-index:50; }
 </style>
 </head>
@@ -62,6 +68,7 @@
     <div class="title">swooper</div>
     <div class="ver" id="ver">v0.20</div>
     <button class="play" id="play">START</button>
+    <div class="seedrow">сид <input id="seedin" inputmode="numeric" spellcheck="false"><button id="seedgo" title="новый мир">⟳</button><button id="seedrnd" title="случайный мир">🎲</button></div>
   </div>
 </div>
 
@@ -84,7 +91,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.45';
+const VERSION = '0.46';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -148,28 +155,72 @@ const invLerp=(a,b,v)=> (v-a)/(b-a);
 const WORLD_UP=new THREE.Vector3(0,1,0), WORLD_DOWN=new THREE.Vector3(0,-1,0), ZERO=new THREE.Vector3();
 const DEG=180/Math.PI;
 
+/* ===================== SEED & PALETTE (A1 — per-seed sunset look; world reproducible) ===================== */
+const seed = (()=>{ const s=parseInt(new URLSearchParams(location.search).get('seed'),10); return Number.isFinite(s)?(s>>>0):(Math.floor(Math.random()*1e9)>>>0); })();
+const _wr=mulberry32((seed^0x5bd1e995)>>>0); const WORLD_OX=_wr()*900-450, WORLD_OZ=_wr()*900-450;   // each seed = different mountains too
+function hsv2rgb(h,s,v){ h=((h%1)+1)%1; const i=Math.floor(h*6),f=h*6-i,p=v*(1-s),q=v*(1-f*s),t=v*(1-(1-f)*s);
+  switch(i%6){case 0:return[v,t,p];case 1:return[q,v,p];case 2:return[p,v,t];case 3:return[p,q,v];case 4:return[t,p,v];default:return[v,p,q];} }
+function buildPalette(sd){
+  const R=mulberry32((Math.imul(sd|0,2654435761)^0x9e3779b9)>>>0); R();R();          // own rng, de-correlated
+  const RR=(a,b)=>a+(b-a)*R(), CL=(x,a,b)=>x<a?a:x>b?b:x;
+  const blueHour=R()<0.16; let sunHue,sunSat,sunVal;
+  if(blueHour){ sunHue=RR(0.58,0.64); sunSat=RR(0.20,0.32); sunVal=RR(0.82,0.92); }     // rare cool blue-hour
+  else        { sunHue=RR(-0.02,0.105); sunSat=RR(0.46,0.72); sunVal=RR(0.93,1.0); }     // warm sunset (~84%)
+  const glow=hsv2rgb(sunHue,sunSat,sunVal);
+  const lift=(c,t,vmin)=>{ let r=c.map(x=>x+(1-x)*t); const v=Math.max(r[0],r[1],r[2]); if(v<vmin&&v>0){const s=vmin/v; r=r.map(x=>Math.min(1,x*s));} return r; };
+  const horizonRGB=hsv2rgb(sunHue+0.004, CL(sunSat*0.62,0.10,0.42), RR(0.86,0.95));
+  const skyTopRGB=hsv2rgb(RR(blueHour?0.60:0.58, blueHour?0.66:0.64), RR(0.16,0.30), RR(0.72,0.86));
+  const skyGroundRGB=hsv2rgb(sunHue, CL(sunSat*0.30,0.06,0.20), RR(0.40,0.52));
+  const fogRGB=[0,1,2].map(i=>horizonRGB[i]+(glow[i]-horizonRGB[i])*0.12);
+  const hemiSkyRGB=hsv2rgb(RR(0.58,0.64), RR(0.10,0.20), RR(0.85,0.95));
+  const hemiGndRGB=hsv2rgb(sunHue, 0.14, RR(0.36,0.44));
+  const greenRGB=hsv2rgb(RR(0.17,0.28), RR(0.42,0.60), RR(0.34,0.46));
+  const rockRGB=hsv2rgb(RR(0.05,0.10), RR(0.14,0.24), RR(0.38,0.46));
+  const snowRGB=hsv2rgb(sunHue, RR(0.05,0.11), RR(0.95,0.99));
+  const C=a=>new THREE.Color(a[0],a[1],a[2]);
+  return { blueHour, seed:sd,
+    sun:C(hsv2rgb(sunHue, sunSat*0.55, Math.min(1,sunVal+0.04))), sunGlow:C(glow),
+    haloTint:C(lift(glow,0.45,0.92)), discCore:C(lift(glow,0.55,0.96)),
+    horizon:C(horizonRGB), skyTop:C(skyTopRGB), skyGround:C(skyGroundRGB), fog:C(fogRGB),
+    hemiSky:C(hemiSkyRGB), hemiGnd:C(hemiGndRGB), rimColor:C(hsv2rgb(sunHue, CL(sunSat*0.9,0.45,0.80), 1.0)),
+    green:greenRGB, rock:rockRGB, snow:snowRGB };
+}
+const PAL=buildPalette(seed);
+
 /* ===================== RENDERER / SCENE ===================== */
 const app=document.getElementById('app');
 const renderer=new THREE.WebGLRenderer({antialias:true, powerPreference:'high-performance'});
 renderer.setPixelRatio(Math.min(window.devicePixelRatio,1.5));
 renderer.setSize(innerWidth,innerHeight); app.appendChild(renderer.domElement);
 renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
-const SKY=new THREE.Color(0xcfe0e8), HORIZON=new THREE.Color(0xeae6d6);
-const scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(HORIZON,0.000055);
+const SKY=PAL.skyTop, HORIZON=PAL.horizon;
+const scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(PAL.fog, 0.000068);   // warm aerial-perspective haze
 const camera=new THREE.PerspectiveCamera(72, innerWidth/innerHeight, 0.5, 60000);
-scene.add(new THREE.HemisphereLight(0xeaf1ff,0x6e7060,0.42));   // lower ambient -> darker, more visible shadows
-// sun = shadow-casting directional light, follows the craft so shadows are always near you
-const SUN_OFFSET=new THREE.Vector3(-2600,4200,-1700), SUN_DIR=SUN_OFFSET.clone().normalize();
-const sun=new THREE.DirectionalLight(0xfff2db,1.55); sun.castShadow=true;
-sun.shadow.mapSize.set(2048,2048); sun.shadow.bias=-0.0004; sun.shadow.normalBias=10;
+scene.add(new THREE.HemisphereLight(PAL.hemiSky, PAL.hemiGnd, 0.55));            // cool dusk sky / warm ground bounce
+scene.add(new THREE.AmbientLight(0x2a2230, 0.18));                               // dusky floor — shadows never crush to black
+// A2 sunset: LOW warm key light (~18° elevation) -> long raking shadows; follows the craft
+const SUN_OFFSET=new THREE.Vector3(-3400,1320,-2200), SUN_DIR=SUN_OFFSET.clone().normalize();
+const sun=new THREE.DirectionalLight(PAL.sun,2.05); sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048); sun.shadow.bias=-0.0005; sun.shadow.normalBias=14;
 { const c=sun.shadow.camera; c.near=200; c.far=14000; c.left=-4200; c.right=4200; c.top=4200; c.bottom=-4200; c.updateProjectionMatrix(); }
 scene.add(sun); scene.add(sun.target);
-const sunDisc=new THREE.Mesh(new THREE.SphereGeometry(1400,18,18), new THREE.MeshBasicMaterial({color:0xfff6e2,fog:false})); sunDisc.renderOrder=-1; scene.add(sunDisc);
+const sunDisc=new THREE.Mesh(new THREE.SphereGeometry(1650,20,20), new THREE.MeshBasicMaterial({color:PAL.discCore,fog:false,toneMapped:false})); sunDisc.renderOrder=-1; scene.add(sunDisc);
+// A3 haze sky: 3-band gradient (ground/horizon/zenith) + warm in-scatter glow & tight halo toward the sun
 const skyMat=new THREE.ShaderMaterial({ side:THREE.BackSide, fog:false, depthWrite:false, depthTest:false,
-  uniforms:{ top:{value:SKY}, bottom:{value:HORIZON} },
+  uniforms:{ zenith:{value:PAL.skyTop}, horizon:{value:PAL.horizon}, ground:{value:PAL.skyGround},
+    sunTint:{value:PAL.sunGlow}, haloTint:{value:PAL.haloTint}, sunDir:{value:SUN_DIR.clone()},
+    glowStr:{value:0.85}, glowExp:{value:4.5}, haloStr:{value:0.55}, haloExp:{value:64.0}, bandW:{value:0.16}, bandLift:{value:0.55} },
   vertexShader:`varying vec3 d; void main(){ d=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
-  fragmentShader:`uniform vec3 top,bottom; varying vec3 d; void main(){ float h=clamp(normalize(d).y*.5+.5,0.,1.); gl_FragColor=vec4(mix(bottom,top,smoothstep(0.,1.,h)),1.); }`});
-const sky=new THREE.Mesh(new THREE.SphereGeometry(48000,24,16),skyMat); sky.renderOrder=-1; scene.add(sky);
+  fragmentShader:`uniform vec3 zenith,horizon,ground,sunTint,haloTint,sunDir; uniform float glowStr,glowExp,haloStr,haloExp,bandW,bandLift; varying vec3 d;
+    void main(){ vec3 v=normalize(d); float y=v.y;
+      float up=smoothstep(0.0,0.55,y); vec3 col=mix(horizon,zenith,up);
+      float dn=smoothstep(0.0,-0.35,y); col=mix(col,ground,dn);
+      float band=exp(-(y*y)/(bandW*bandW)); col=mix(col,horizon,band*bandLift);
+      float md=max(dot(v,normalize(sunDir)),0.0); float hb=0.55+0.45*band;
+      col=mix(col,sunTint, clamp(pow(md,glowExp)*glowStr*hb,0.0,1.0));
+      col=mix(col,haloTint,clamp(pow(md,haloExp)*haloStr,0.0,1.0));
+      gl_FragColor=vec4(col,1.0); }`});
+const sky=new THREE.Mesh(new THREE.SphereGeometry(48000,24,16),skyMat); sky.renderOrder=-2; scene.add(sky);
 function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
 
 /* ===================== TERRAIN — low-poly mountains, endless descent ===================== */
@@ -191,7 +242,7 @@ function ridgedFbm(x,z){ let amp=1,freq=1,sum=0,norm=0;
   return sum/norm; }
 function terrainHeight(x,z){
   const wx=x+T_WARP*Math.sin(z*0.00006+1.7), wz=z+T_WARP*Math.sin(x*0.00005+0.4);   // domain warp
-  return ridgedFbm(wx*TFF_BASE+5.0, wz*TFF_BASE+2.0)*PEAK_H - 1100;
+  return ridgedFbm(wx*TFF_BASE+5.0+WORLD_OX, wz*TFF_BASE+2.0+WORLD_OZ)*PEAK_H - 1100;   // +seed world offset
 }
 // ---- wind field: orographic ridge lift + thermals -> you can SOAR ----
 // NON-UNIFORM wind: a slow large-scale drift of direction & strength over km,
@@ -220,7 +271,7 @@ function windLift(x,y,z,t){
   return clamp(oro+th, -26, 28);   // gentle enough to add lift, not spike AoA into a stall
 }
 
-const C_GREEN=[0.30,0.45,0.22], C_ROCK=[0.46,0.42,0.35], C_SNOW=[0.95,0.96,0.99];
+const C_GREEN=PAL.green, C_ROCK=PAL.rock, C_SNOW=PAL.snow;   // seed-driven, sunset-harmonised
 function setColor(col,o,h,ny,wx,wz){
   const snow=clamp((h-3100)/1400,0,1), green=clamp((1100-h)/1300,0,1), steep=clamp((0.80-ny)/0.42,0,1);
   let r=C_ROCK[0],g=C_ROCK[1],b=C_ROCK[2];                       // rock base
@@ -237,14 +288,19 @@ const terrainMat=new THREE.MeshLambertMaterial({vertexColors:true, flatShading:t
 // worldspace grid overlay -> the ground is easy to read (proximity / speed / relief)
 const GRID_SIZE=120;
 terrainMat.onBeforeCompile=(sh)=>{
-  sh.vertexShader='varying vec3 vWP;\n'+sh.vertexShader.replace(
-    '#include <begin_vertex>', '#include <begin_vertex>\n vWP=(modelMatrix*vec4(transformed,1.0)).xyz;');
-  sh.fragmentShader='varying vec3 vWP;\n'+sh.fragmentShader.replace('#include <dithering_fragment>',
-    'vec2 gc=vWP.xz/'+GRID_SIZE.toFixed(1)+';\n'+
-    'vec2 gd=abs(fract(gc-0.5)-0.5)/fwidth(gc);\n'+
-    'float ln=1.0-min(min(gd.x,gd.y),1.0);\n'+
-    'gl_FragColor.rgb=mix(gl_FragColor.rgb, gl_FragColor.rgb*0.45, ln*0.6);\n'+
-    '#include <dithering_fragment>');
+  sh.uniforms.uRimColor={value:PAL.rimColor}; sh.uniforms.uRimStrength={value:0.50}; sh.uniforms.uRimPower={value:2.5}; sh.uniforms.uSunDir={value:SUN_DIR};
+  sh.vertexShader='varying vec3 vWP; varying vec3 vWN;\n'+sh.vertexShader
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\n vWP=(modelMatrix*vec4(transformed,1.0)).xyz;')
+    .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\n vWN=mat3(modelMatrix)*objectNormal;');
+  sh.fragmentShader='varying vec3 vWP; varying vec3 vWN;\nuniform vec3 uRimColor,uSunDir; uniform float uRimStrength,uRimPower;\n'+sh.fragmentShader
+    .replace('#include <fog_fragment>',   // warm sun rim on ridge edges facing the sun (before fog so it fades with distance)
+      'float rim=pow(clamp(dot(normalize(vWN),uSunDir),0.0,1.0),uRimPower);\n gl_FragColor.rgb+=uRimColor*(rim*uRimStrength);\n#include <fog_fragment>')
+    .replace('#include <dithering_fragment>',   // worldspace grid overlay (applied LAST so it stays readable)
+      'vec2 gc=vWP.xz/'+GRID_SIZE.toFixed(1)+';\n'+
+      'vec2 gd=abs(fract(gc-0.5)-0.5)/fwidth(gc);\n'+
+      'float ln=1.0-min(min(gd.x,gd.y),1.0);\n'+
+      'gl_FragColor.rgb=mix(gl_FragColor.rgb, gl_FragColor.rgb*0.45, ln*0.6);\n'+
+      '#include <dithering_fragment>');
 };
 const chunks=[];
 {
@@ -309,6 +365,31 @@ function updateAirParticles(dt){
   airParticles.geometry.attributes.position.needsUpdate=true;
 }
 
+/* ===================== SNOW (A7 — high-altitude flurries near the peaks) ===================== */
+const SNOW_N=900, SNOW_BOX=900, snowPos=new Float32Array(SNOW_N*3); let snowPoints, snowMat;
+{ const rng=mulberry32(7);
+  for(let i=0;i<SNOW_N;i++){ snowPos[i*3]=(rng()-0.5)*SNOW_BOX; snowPos[i*3+1]=(rng()-0.5)*SNOW_BOX; snowPos[i*3+2]=(rng()-0.5)*SNOW_BOX; }
+  const geo=new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(snowPos,3));
+  snowMat=new THREE.PointsMaterial({ color:0xfff4ec, size:2.3, sizeAttenuation:true, transparent:true, opacity:0, depthWrite:false, fog:true });
+  snowPoints=new THREE.Points(geo,snowMat); snowPoints.frustumCulled=false; scene.add(snowPoints);
+}
+const _snW=new THREE.Vector3();
+function updateSnow(dt){
+  const c=glider.pos, dens=clamp((c.y-2800)/1400,0,1);     // fades in with altitude (near peaks)
+  snowMat.opacity=0.5*dens*dens;
+  if(dens<=0.002) return;
+  windBaseAt(c.x,c.z,simTime,_snW);
+  const wx=_snW.x*0.35*dt, wz=_snW.z*0.35*dt, fall=70*dt;
+  for(let i=0;i<SNOW_N;i++){ const o=i*3;
+    let x=snowPos[o]+wx, y=snowPos[o+1]-fall, z=snowPos[o+2]+wz;
+    let rx=x-c.x; rx-=SNOW_BOX*Math.round(rx/SNOW_BOX); x=c.x+rx;
+    let ry=y-c.y; ry-=SNOW_BOX*Math.round(ry/SNOW_BOX); y=c.y+ry;
+    let rz=z-c.z; rz-=SNOW_BOX*Math.round(rz/SNOW_BOX); z=c.z+rz;
+    snowPos[o]=x; snowPos[o+1]=y; snowPos[o+2]=z;
+  }
+  snowPoints.geometry.attributes.position.needsUpdate=true;
+}
+
 /* ===================== CLOUDS (cumulus over thermals + sparse ambiance) =====================
    Instanced camera-facing billboards. Cumulus cluster on the TOP of every strong
    thermal column -> a landmark you aim for to find lift (like real soaring). A few
@@ -332,7 +413,7 @@ const cloudBright=new THREE.InstancedBufferAttribute(new Float32Array(CLOUD_N),1
   cgeo.instanceCount=CLOUD_N;
   const cmat=new THREE.ShaderMaterial({
     transparent:true, depthWrite:false,
-    uniforms:{ map:{value:tex}, sun:{value:new THREE.Color(0xfff4e0)}, shade:{value:new THREE.Color(0xb6bdca)} },
+    uniforms:{ map:{value:tex}, sun:{value:PAL.haloTint.clone()}, shade:{value:PAL.skyGround.clone()} },   // sunset-lit tops / dusk undersides
     vertexShader:`attribute vec3 aCenter; attribute float aSize; attribute float aBright;
       varying vec2 vUv; varying float vB;
       void main(){ vUv=uv; vB=aBright;
@@ -438,7 +519,8 @@ function updateFlex(dt){
 const keys={}; let sens=1, invert=false, state='menu', simTime=0, spawnY=0;
 let rawH=0, rawV=0, rawY=0, horizontalInput=0, verticalInput=0, yawInput=0;
 let inputOverride=null;             // headless
-addEventListener('keydown',e=>{ if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code))e.preventDefault();
+addEventListener('keydown',e=>{ if(e.target&&e.target.tagName==='INPUT') return;   // typing in seed field: ignore game keys
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code))e.preventDefault();
   keys[e.code]=true;
   if(e.code==='KeyR'){ if(state!=='menu') startFlight(); }
   else if(e.code==='KeyM'){ audioOn=!audioOn; }
@@ -451,6 +533,11 @@ document.getElementById('play').onclick=startFlight;
 document.getElementById('resume').onclick=resumeFlight;
 document.getElementById('ver').textContent='v'+VERSION;
 document.getElementById('tag').textContent='swooper v'+VERSION;
+{ const si=document.getElementById('seedin'); si.value=seed;
+  const go=v=>{ location.href=location.pathname+'?seed='+((v>>>0)||0); };
+  document.getElementById('seedgo').onclick=()=>go(parseInt(si.value,10)||0);
+  document.getElementById('seedrnd').onclick=()=>go(Math.floor(Math.random()*1e9));
+  si.addEventListener('keydown',e=>{ if(e.code==='Enter') go(parseInt(si.value,10)||0); }); }
 
 function startFlight(){
   initAudio();
@@ -782,6 +869,7 @@ function loop(now){
   sun.position.copy(_rp).add(SUN_OFFSET); sun.target.position.copy(_rp); sun.target.updateMatrixWorld();
   sunDisc.position.copy(camera.position).addScaledVector(SUN_DIR,44000);
   updateAirParticles(frame||FIXED);
+  updateSnow(frame||FIXED);
   renderer.render(scene,camera);
 }
 addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
@@ -810,6 +898,9 @@ window.__swooper={
   preview(dist=16,az=0.7,el=0.34,g=null){ if(g!=null) glider.gload=g; previewMode=true; gliderGroup.position.set(0,0,0); gliderGroup.quaternion.identity();
     camera.position.set(Math.sin(az)*Math.cos(el)*dist, Math.sin(el)*dist, Math.cos(az)*Math.cos(el)*dist); camera.lookAt(0,0.4,0); },
   varioGainNow(){ return varioGain?+varioGain.gain.value.toFixed(4):-1; },
+  palette(){ return {seed, blueHour:PAL.blueHour, sun:'#'+PAL.sun.getHexString(), horizon:'#'+PAL.horizon.getHexString(), skyTop:'#'+PAL.skyTop.getHexString(), fog:'#'+PAL.fog.getHexString(), green:PAL.green.map(x=>+x.toFixed(2)), snow:PAL.snow.map(x=>+x.toFixed(2))}; },
+  snowOpacity(){ return +snowMat.opacity.toFixed(3); },
+  sunView(y=7000){ previewMode=true; gliderGroup.position.set(0,-99999,0); camera.position.set(0,y,0); camera.lookAt(new THREE.Vector3(0,y,0).add(SUN_DIR.clone().multiplyScalar(1000))); },
   camUpWorldY(){ return +(new THREE.Vector3(0,1,0).applyQuaternion(camera.quaternion).y).toFixed(3); },
   camDist(){ return +camera.position.distanceTo(gliderGroup.position).toFixed(1); },
   sim(n,h=0,v=0,yaw=0){
