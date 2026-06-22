@@ -23,6 +23,8 @@
     font-size:15px; letter-spacing:2px; opacity:0; transition:opacity .1s; text-shadow:0 1px 6px rgba(0,0,0,.6); }
   #stallw.on{ opacity:1; }
   #tag{ position:absolute; bottom:8px; left:12px; font-size:11px; font-weight:700; letter-spacing:2px; opacity:.4; }
+  #fps{ position:absolute; top:8px; right:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:12px; font-weight:600; letter-spacing:1px; color:#eae4d6; opacity:.55; text-shadow:0 1px 4px rgba(0,0,0,.6); }
   #modelbar{ position:absolute; top:92px; left:50%; transform:translateX(-50%); text-align:center;
     font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; line-height:1.5;
     color:#eae4d6; background:rgba(12,16,20,.34); border:1px solid rgba(232,176,75,.3); border-radius:4px;
@@ -58,6 +60,7 @@
   <div id="i-wind" class="inst-wrap"></div>
   <div id="stallw">⚠ STALL</div>
   <div id="modelbar"></div>
+  <div id="fps"></div>
   <div id="tag">swooper</div>
 </div>
 
@@ -88,7 +91,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.43';
+const VERSION = '0.44';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -814,10 +817,13 @@ function silenceAudio(){    // on pause: fade everything out so nothing hangs wh
 
 /* ===================== LOOP ===================== */
 let last=performance.now(), acc=0;
+const fpsEl=document.getElementById('fps'); let fpsEMA=60, fpsT=0;
 const _rp=new THREE.Vector3(), _rq=new THREE.Quaternion();
 function loop(now){
   requestAnimationFrame(loop);
-  let frame=(now-last)/1000; last=now; if(!(frame>0))frame=0; frame=Math.min(frame,0.1);
+  let frame=(now-last)/1000; last=now; if(!(frame>0))frame=0;
+  if(frame>0){ fpsEMA+=(1/frame-fpsEMA)*0.12; fpsT+=frame; if(fpsT>=0.25){ fpsT=0; if(fpsEl) fpsEl.textContent=Math.round(fpsEMA)+' FPS'; } }
+  frame=Math.min(frame,0.1);
   if (state==='flying'){
     acc+=frame; let guard=0;
     while(acc>=FIXED && guard++<8){ prevPos.copy(glider.pos); prevQ.copy(glider.q); fixedStep(); acc-=FIXED; }
