@@ -98,6 +98,10 @@
 <div class="overlay hidden" id="settings">
   <div>
     <div class="title" style="font-size:40px;letter-spacing:7px;">настройки</div>
+    <div class="setbtns">
+      <button class="play" id="set-resume">Продолжить</button>
+      <button class="play ghost" id="set-restart">Рестарт</button>
+    </div>
     <div class="setlist">
       <label class="setrow"><input type="checkbox" id="set-sound"> звук ветра</label>
       <label class="setrow"><input type="checkbox" id="set-vario"> звук вариометра</label>
@@ -106,10 +110,6 @@
       <label class="setrow"><input type="checkbox" id="set-fx"> свист у рельефа</label>
       <div class="setrow setrange"><span>термики</span><input type="range" id="set-therm" min="0.3" max="1.8" step="0.05"><span class="rngend">сильнее</span></div>
       <div class="setrow setseg"><span>графика</span><span class="seg" id="set-gfx"><button data-q="0">низк</button><button data-q="1">сред</button><button data-q="2">выс</button></span></div>
-    </div>
-    <div class="setbtns">
-      <button class="play" id="set-resume">Продолжить</button>
-      <button class="play ghost" id="set-restart">Рестарт</button>
     </div>
     <div class="sethint">Esc — продолжить · P — пауза · Space — тормоза · R — рестарт</div>
     <div class="seedrow subtle">сид <input id="seedin2" inputmode="numeric" spellcheck="false"><button id="seedgo2" title="лететь в этот мир">⟳</button></div>
@@ -139,7 +139,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.56';
+const VERSION = '0.57';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -686,7 +686,7 @@ function updateTrails(rp,rq){
 }
 
 /* ===================== NEAR-MISS FX (C1) + TERRAIN CRASH (G2) ===================== */
-let nearMiss=0, fxOn=prefB('fx',true), crashOn=prefB('crash',true);
+let nearMiss=0, fxOn=prefB('fx',true), crashOn=prefB('crash',false);   // crash into terrain OFF by default
 let camOrbitAz=0, camOrbitEl=0, dragging=false, camIdle=0, _pmx=0, _pmy=0;
 const crashEl=document.getElementById('crash');
 function clearanceNow(){                          // min terrain clearance under/around/ahead -> near-miss thrill
@@ -987,7 +987,7 @@ function vtape(elId,o){
   const ticks=[]; for(let i=0;i<34;i++){ const ln=E('line',{stroke:C_CREAM,'stroke-width':1.1},g); const tx=E('text',{fill:C_CREAM,'font-size':10.5,'text-anchor':'end','font-family':MONO},g); const bd=o.bands?E('rect',{x:W-4,width:4},g):null; ticks.push({ln,tx,bd}); }
   E('polygon',{points:`3,${cy} 13,${cy-9} ${W-2},${cy-9} ${W-2},${cy+9} 13,${cy+9}`,fill:C_INK,stroke:C_AMBER,'stroke-width':1.3},svg);
   const val=E('text',{x:W-5,y:cy+4,'text-anchor':'end','font-size':14,fill:'#fff','font-weight':600,'font-family':MONO},svg);
-  E('text',{x:W/2,y:12,'text-anchor':'middle','font-size':9.5,fill:C_CREAM,opacity:0.85,'font-family':MONO},svg).textContent=o.unit;
+  E('text',{x:W/2,y:14,'text-anchor':'middle','font-size':17,'font-weight':700,fill:C_AMBER,opacity:1,'font-family':MONO},svg).textContent=o.unit;
   return {o,cy,H,W,ticks,val,numX:W-9,tx1:W-22,tx2:W-12};
 }
 function updVtape(T,value){
@@ -1015,7 +1015,7 @@ E('line',{x1:VW-26,y1:VCY,x2:VW-12,y2:VCY,stroke:C_CREAM,'stroke-width':1.6,opac
 const vNeedle=E('polygon',{points:`${VW-16},${VCY} ${VW-7},${VCY-5} ${VW-7},${VCY+5}`,fill:C_AMBER},vsvg);
 E('rect',{x:8,y:VH-38,width:VW-16,height:20,rx:3,fill:C_INK,stroke:C_AMBER,'stroke-width':1},vsvg);
 const vVal=E('text',{x:VW/2,y:VH-23,'text-anchor':'middle','font-size':13,fill:C_AMBER,'font-weight':600,'font-family':MONO},vsvg);
-E('text',{x:VW/2,y:VH-5,'text-anchor':'middle','font-size':8.5,fill:C_CREAM,opacity:0.7,'font-family':MONO},vsvg).textContent='m/s';
+E('text',{x:VW/2,y:VH-4,'text-anchor':'middle','font-size':14,'font-weight':700,fill:C_AMBER,opacity:1,'font-family':MONO},vsvg).textContent='m/s';
 function updVario(ms){ const c=Math.max(-6,Math.min(6,ms)), y=VCY-c*VPX; vNeedle.setAttribute('points',`${VW-16},${y} ${VW-7},${y-5} ${VW-7},${y+5}`); vVal.textContent=(ms>=0?'+':'')+ms.toFixed(1); }
 
 // ---- wind indicator: nose-up compass rose, amber arrow shows where the wind blows TO ----
