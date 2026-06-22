@@ -92,9 +92,10 @@
     <div class="title" style="font-size:40px;letter-spacing:7px;">настройки</div>
     <div class="setlist">
       <label class="setrow"><input type="checkbox" id="set-sound"> звук ветра</label>
+      <label class="setrow"><input type="checkbox" id="set-vario"> звук вариометра</label>
       <label class="setrow"><input type="checkbox" id="set-crash"> разбиваться о рельеф</label>
       <label class="setrow"><input type="checkbox" id="set-trails"> следы за крыльями</label>
-      <label class="setrow"><input type="checkbox" id="set-fx"> эффекты пролёта</label>
+      <label class="setrow"><input type="checkbox" id="set-fx"> свист у рельефа</label>
     </div>
     <div class="setbtns">
       <button class="play" id="set-resume">Продолжить</button>
@@ -129,7 +130,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.51';
+const VERSION = '0.52';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -559,58 +560,89 @@ function updateFlex(dt){
   if(flex.spoilerR){ const sd=-brake*1.15; flex.spoilerR.rotation.x=sd; flex.spoilerL.rotation.x=sd; }   // airbrakes pop up with Space
 }
 
+function smoothstep01(a,b,x){ x=clamp((x-a)/(b-a),0,1); return x*x*(3-2*x); }
+
 /* ===================== AIRBRAKES (B2) — Space held = drag + lift dump ===================== */
 let brake=0;                                   // 0..1 smoothed spoiler deployment (held Space)
 const CD_BRAKE=0.17, BRAKE_LIFT_DUMP=0.5;
-// disturbed-air puff aft of the wings while braking (local to the craft, no text)
-const BRK_N=90, brkPos=new Float32Array(BRK_N*3); let brkPoints, brkMat;
-{ const rng=mulberry32(303);
-  for(let i=0;i<BRK_N;i++){ brkPos[i*3]=(rng()-0.5)*16; brkPos[i*3+1]=0.4+(rng()-0.5)*0.8; brkPos[i*3+2]=0.5+rng()*6; }
+// soft "spilled air" vapor streaming aft off the deployed spoilers (feathered sprites, not squares)
+const BRK_N=64, brkPos=new Float32Array(BRK_N*3), brkVel=new Float32Array(BRK_N*3), brkLife=new Float32Array(BRK_N);
+let brkPoints, brkMat;
+{ const cv=document.createElement('canvas'); cv.width=cv.height=64; const g2=cv.getContext('2d');   // soft round sprite
+  const grd=g2.createRadialGradient(32,32,0,32,32,32); grd.addColorStop(0,'rgba(255,255,255,0.9)'); grd.addColorStop(0.45,'rgba(255,255,255,0.3)'); grd.addColorStop(1,'rgba(255,255,255,0)');
+  g2.fillStyle=grd; g2.fillRect(0,0,64,64); const tex=new THREE.CanvasTexture(cv);
+  const rng=mulberry32(303);
+  brkPoints={_spawn:i=>{ const s=rng()<0.5?-1:1; brkPos[i*3]=s*(2.4+rng()*5.4); brkPos[i*3+1]=0.45+(rng()-0.5)*0.5; brkPos[i*3+2]=-0.2+rng()*0.6;
+    brkVel[i*3]=(rng()-0.5)*1.2; brkVel[i*3+1]=0.6+rng()*1.0; brkVel[i*3+2]=7+rng()*5; brkLife[i]=rng(); }};
+  for(let i=0;i<BRK_N;i++) brkPoints._spawn(i);
   const geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.BufferAttribute(brkPos,3));
-  brkMat=new THREE.PointsMaterial({ color:0xeaf2f7, size:0.5, sizeAttenuation:true, transparent:true, opacity:0, depthWrite:false, fog:false });
-  brkPoints=new THREE.Points(geo,brkMat); brkPoints.frustumCulled=false; gliderGroup.add(brkPoints);
+  brkMat=new THREE.PointsMaterial({ map:tex, color:0xeef5fa, size:3.6, sizeAttenuation:true, transparent:true, opacity:0, depthWrite:false, fog:false });
+  const pts=new THREE.Points(geo,brkMat); pts.frustumCulled=false; gliderGroup.add(pts); brkPoints.mesh=pts; brkPoints.geo=geo;
 }
-function updateBrakeFX(){
-  brkMat.opacity=0.5*brake;
+function updateBrakeFX(dt){
+  dt=Math.min(dt||0.016,0.05);
+  brkMat.opacity=0.24*brake;
   if(brake<0.02) return;
+  const sp=brkPoints._spawn;
   for(let i=0;i<BRK_N;i++){ const o=i*3;
-    brkPos[o]   += (Math.random()-0.5)*1.4;
-    brkPos[o+1] += (Math.random()-0.5)*1.1 + 0.25;
-    brkPos[o+2] += 2.4 + Math.random()*2.2;
-    if(brkPos[o+2]>10 || Math.random()<0.05){ brkPos[o]=(Math.random()-0.5)*16; brkPos[o+1]=0.5+(Math.random()-0.5)*0.7; brkPos[o+2]=0.4+Math.random()*1.6; }
+    brkPos[o]+=brkVel[o]*dt; brkPos[o+1]+=brkVel[o+1]*dt; brkPos[o+2]+=brkVel[o+2]*dt;
+    brkLife[i]+=dt*1.3;
+    if(brkLife[i]>1 || brkPos[o+2]>11) sp(i);
   }
-  brkPoints.geometry.attributes.position.needsUpdate=true;
+  brkPoints.geo.attributes.position.needsUpdate=true;
 }
 
-/* ===================== WINGTIP VORTEX TRAILS (C3 — show under load, toggle) ===================== */
+/* ===================== WINGTIP VORTEX TRAILS (C3 — ribbon from the tips, toggle) =====================
+   Camera-facing ribbon from each wingtip. Profile along the trail: thin & faint where it leaves the
+   tip, widening & strengthening downstream, then fading at the far tail. Attaches to the bowing tip. */
 let trailsOn=true;
-const TRAIL_N=64;
-const TIP_OFF_R=new THREE.Vector3(CLASSIC.span/2+0.45, CLASSIC.wingY+0.2, CLASSIC.wingZ);
-const TIP_OFF_L=new THREE.Vector3(-(CLASSIC.span/2+0.45), CLASSIC.wingY+0.2, CLASSIC.wingZ);
+const TRAIL_N=46, HALF_SPAN=CLASSIC.span/2;
+const trW=new Float32Array(TRAIL_N), trA=new Float32Array(TRAIL_N);   // static width/alpha vs position
+for(let i=0;i<TRAIL_N;i++){ const u=(TRAIL_N-1-i)/(TRAIL_N-1);        // u: 0 at tip (newest) -> 1 at oldest
+  trW[i]=0.05 + 1.55*Math.min(1,u/0.6);
+  trA[i]=Math.min(1,u/0.16) * (1-smoothstep01(0.72,1.0,u)); }
 function makeTrail(){
-  const pos=new Float32Array(TRAIL_N*3), age=new Float32Array(TRAIL_N);
-  for(let i=0;i<TRAIL_N;i++) age[i]=1-i/(TRAIL_N-1);            // i=0 oldest (faded) -> last newest (opaque)
+  const cpos=new Float32Array(TRAIL_N*3), vpos=new Float32Array(TRAIL_N*2*3), valpha=new Float32Array(TRAIL_N*2);
+  for(let i=0;i<TRAIL_N;i++){ valpha[i*2]=trA[i]; valpha[i*2+1]=trA[i]; }
+  const idx=[]; for(let i=0;i<TRAIL_N-1;i++){ const a=i*2; idx.push(a,a+1,a+2, a+1,a+3,a+2); }
   const geo=new THREE.BufferGeometry();
-  geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
-  geo.setAttribute('aAge',new THREE.BufferAttribute(age,1));
-  const mat=new THREE.ShaderMaterial({ transparent:true, depthWrite:false,
-    uniforms:{ uColor:{value:new THREE.Color(0xdfeaf2)}, uOpacity:{value:0} },
-    vertexShader:`attribute float aAge; varying float vA; void main(){ vA=aAge; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
-    fragmentShader:`uniform vec3 uColor; uniform float uOpacity; varying float vA; void main(){ gl_FragColor=vec4(uColor,(1.0-vA)*uOpacity); }`});
-  const line=new THREE.Line(geo,mat); line.frustumCulled=false; line.renderOrder=1; scene.add(line);
-  return {pos,geo,mat,line};
+  geo.setAttribute('position',new THREE.BufferAttribute(vpos,3));
+  geo.setAttribute('aAlpha',new THREE.BufferAttribute(valpha,1));
+  geo.setIndex(idx);
+  const mat=new THREE.ShaderMaterial({ transparent:true, depthWrite:false, side:THREE.DoubleSide,
+    uniforms:{ uColor:{value:new THREE.Color(0xe6eef5)}, uOpacity:{value:0} },
+    vertexShader:`attribute float aAlpha; varying float vA; void main(){ vA=aAlpha; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+    fragmentShader:`uniform vec3 uColor; uniform float uOpacity; varying float vA; void main(){ float a=vA*uOpacity; if(a<0.004) discard; gl_FragColor=vec4(uColor,a); }`});
+  const mesh=new THREE.Mesh(geo,mat); mesh.frustumCulled=false; mesh.renderOrder=1; scene.add(mesh);
+  return {cpos,vpos,geo,mat,mesh};
 }
 const trailR=makeTrail(), trailL=makeTrail();
-const _tip=new THREE.Vector3();
-function seedTrail(tr,off,rp,rq){ _tip.copy(off).applyQuaternion(rq).add(rp);
-  for(let i=0;i<TRAIL_N;i++){ tr.pos[i*3]=_tip.x; tr.pos[i*3+1]=_tip.y; tr.pos[i*3+2]=_tip.z; } tr.geo.attributes.position.needsUpdate=true; }
+const _tip=new THREE.Vector3(), _tan=new THREE.Vector3(), _vd=new THREE.Vector3(), _sd=new THREE.Vector3(), _fb=new THREE.Vector3(0,0,1);
+function wingTipLocal(sign,out){ const a=flex.dih+(flex.bend||0);          // follow the bowing tip
+  return out.set(sign*(0.45+HALF_SPAN*Math.cos(a)), CLASSIC.wingY+HALF_SPAN*Math.sin(a), CLASSIC.wingZ+0.2); }
+function rebuildRibbon(tr){
+  const c=tr.cpos, v=tr.vpos, N=TRAIL_N, cam=camera.position;
+  for(let i=0;i<N;i++){ const o=i*3;
+    const p=(i>0?i-1:i)*3, q=(i<N-1?i+1:i)*3;
+    _tan.set(c[q]-c[p], c[q+1]-c[p+1], c[q+2]-c[p+2]);
+    if(_tan.lengthSq()<1e-8) _tan.copy(_fb); else { _tan.normalize(); _fb.copy(_tan); }
+    _vd.set(cam.x-c[o], cam.y-c[o+1], cam.z-c[o+2]);
+    _sd.crossVectors(_tan,_vd); if(_sd.lengthSq()<1e-8) _sd.set(1,0,0); else _sd.normalize();
+    const w=trW[i], a=i*6;
+    v[a]=c[o]+_sd.x*w;   v[a+1]=c[o+1]+_sd.y*w; v[a+2]=c[o+2]+_sd.z*w;
+    v[a+3]=c[o]-_sd.x*w; v[a+4]=c[o+1]-_sd.y*w; v[a+5]=c[o+2]-_sd.z*w;
+  }
+  tr.geo.attributes.position.needsUpdate=true;
+}
+function seedTrail(tr,sign,rp,rq){ wingTipLocal(sign,_tip).applyQuaternion(rq).add(rp);
+  for(let i=0;i<TRAIL_N;i++){ tr.cpos[i*3]=_tip.x; tr.cpos[i*3+1]=_tip.y; tr.cpos[i*3+2]=_tip.z; } rebuildRibbon(tr); }
 function updateTrails(rp,rq){
-  const op = trailsOn ? clamp((Math.abs(glider.gload)-1.25)*0.55,0,0.75) : 0;   // vortices appear under G (turns/pulls)
+  const op = trailsOn ? clamp((Math.abs(glider.gload)-1.2)*0.55,0,0.9) : 0;   // vortices appear under G (turns/pulls)
   trailR.mat.uniforms.uOpacity.value=op; trailL.mat.uniforms.uOpacity.value=op;
-  for(const [tr,off] of [[trailR,TIP_OFF_R],[trailL,TIP_OFF_L]]){
-    _tip.copy(off).applyQuaternion(rq).add(rp);
-    tr.pos.copyWithin(0,3); const n=tr.pos.length; tr.pos[n-3]=_tip.x; tr.pos[n-2]=_tip.y; tr.pos[n-1]=_tip.z;
-    tr.geo.attributes.position.needsUpdate=true;
+  for(const [tr,sign] of [[trailR,1],[trailL,-1]]){
+    wingTipLocal(sign,_tip).applyQuaternion(rq).add(rp);
+    tr.cpos.copyWithin(0,3); const n=tr.cpos.length; tr.cpos[n-3]=_tip.x; tr.cpos[n-2]=_tip.y; tr.cpos[n-1]=_tip.z;
+    rebuildRibbon(tr);
   }
 }
 
@@ -646,7 +678,7 @@ addEventListener('blur',()=>{ for(const k in keys) keys[k]=false; dragging=false
 renderer.domElement.addEventListener('pointerdown',e=>{ if(state==='flying'||state==='paused'){ dragging=true; _pmx=e.clientX; _pmy=e.clientY; } });
 addEventListener('pointerup',()=>{ dragging=false; });
 addEventListener('pointermove',e=>{ if(!dragging) return;
-  camOrbitAz=clamp(camOrbitAz-(e.clientX-_pmx)*0.006,-2.6,2.6); camOrbitEl=clamp(camOrbitEl+(e.clientY-_pmy)*0.005,-0.9,1.15);
+  camOrbitAz=clamp(camOrbitAz-(e.clientX-_pmx)*0.009,-3.4,3.4); camOrbitEl=clamp(camOrbitEl+(e.clientY-_pmy)*0.006,-1.1,1.3);   // ±195° -> can swing round to the nose
   _pmx=e.clientX; _pmy=e.clientY; camIdle=0; });
 const menuEl=document.getElementById('menu'), pauseChip=document.getElementById('pausechip'), settingsEl=document.getElementById('settings');
 document.getElementById('play').onclick=startFlight;
@@ -655,11 +687,13 @@ document.getElementById('tag').textContent='swooper v'+VERSION;
 function goSeed(v,auto){ location.href=location.pathname+'?seed='+((v>>>0)||0)+(auto?'&go=1':''); }
 function randomSeed(auto){ try{ localStorage.removeItem('swooper_mute'); }catch(e){} goSeed(Math.floor(Math.random()*1e9), auto); }   // 🎲: fresh world + sound back on
 function setAudioOn(v){ audioOn=v; try{ localStorage.setItem('swooper_mute', v?'0':'1'); }catch(e){} const c=document.getElementById('set-sound'); if(c)c.checked=v; }
+function setVarioOn(v){ varioOn=v; try{ localStorage.setItem('swooper_vario', v?'0':'1'); }catch(e){} const c=document.getElementById('set-vario'); if(c)c.checked=v; }
 // Space: freeze-frame pause (mute, no overlay so you can study the view).  Esc: settings menu.
 function pauseFreeze(){ if(state!=='flying') return; state='paused'; pauseChip.classList.remove('hidden'); silenceAudio(); }
 function openSettings(){ if(state!=='flying'&&state!=='paused') return; state='settings';
   pauseChip.classList.add('hidden'); settingsEl.classList.remove('hidden'); silenceAudio();
   document.getElementById('set-sound').checked=audioOn;
+  document.getElementById('set-vario').checked=varioOn;
   document.getElementById('set-crash').checked=crashOn;
   document.getElementById('set-trails').checked=trailsOn;
   document.getElementById('set-fx').checked=fxOn;
@@ -673,6 +707,7 @@ function openSettings(){ if(state!=='flying'&&state!=='paused') return; state='s
 document.getElementById('set-resume').onclick=resumeFlight;
 document.getElementById('set-restart').onclick=startFlight;
 document.getElementById('set-sound').onchange=e=>{ setAudioOn(e.target.checked); };
+document.getElementById('set-vario').onchange=e=>{ setVarioOn(e.target.checked); };
 document.getElementById('set-crash').onchange=e=>{ crashOn=e.target.checked; };
 document.getElementById('set-trails').onchange=e=>{ trailsOn=e.target.checked; };
 document.getElementById('set-fx').onchange=e=>{ fxOn=e.target.checked; };
@@ -697,7 +732,7 @@ function startFlight(){
   prevPos.copy(glider.pos); prevQ.copy(glider.q);
   updateTerrain(); cloudCX=null; updateClouds();
   brake=0; nearMiss=0; camOrbitAz=0; camOrbitEl=0; camIdle=0; dragging=false;
-  seedTrail(trailR,TIP_OFF_R,glider.pos,glider.q); seedTrail(trailL,TIP_OFF_L,glider.pos,glider.q);
+  seedTrail(trailR,1,glider.pos,glider.q); seedTrail(trailL,-1,glider.pos,glider.q);
   previewMode=false;
   state='flying'; menuEl.classList.add('hidden'); pauseChip.classList.add('hidden'); settingsEl.classList.add('hidden'); crashEl.classList.add('hidden');
 }
@@ -855,8 +890,8 @@ function updateCamera(dt, rpos, rq){
   _ml.lookAt(camera.position,_look,_cUp); _cq.setFromRotationMatrix(_ml);
   camera.quaternion.slerp(_cq, 1-Math.exp(-dt*2.2));           // smooth aim
   const sn=clamp(invLerp(SPD_LO,SPD_HI,glider.gndspeed),0,1);
-  const fov=70+sn*16+nearMiss*9; camera.fov+=(fov-camera.fov)*Math.min(1,dt*6); camera.updateProjectionMatrix();  // near-miss punches FOV
-  document.getElementById('vign').style.opacity=Math.max(Math.max(0,(sn-0.5))*0.8, nearMiss*0.66);                // + vignette
+  const fov=70+sn*16; camera.fov+=(fov-camera.fov)*Math.min(1,dt*4); camera.updateProjectionMatrix();
+  document.getElementById('vign').style.opacity=Math.max(0,(sn-0.5))*0.8;   // speed vignette only — near-miss is audio-only
 }
 
 /* ===================== HUD — glass-cockpit instruments ===================== */
@@ -960,6 +995,7 @@ function updateHUD(dt){
 
 /* ===================== AUDIO (procedural wind + variometer beep) ===================== */
 let audioCtx=null, windGain=null, windFilt=null, audioOn=(()=>{ try{ return localStorage.getItem('swooper_mute')!=='1'; }catch(e){ return true; } })();
+let varioOn=(()=>{ try{ return localStorage.getItem('swooper_vario')!=='1'; }catch(e){ return true; } })();
 let varioOsc=null, varioGain=null, beepPhase=0;
 function initAudio(){
   try{
@@ -987,7 +1023,7 @@ function updateAudio(){
 function updateVarioSound(vario, dt){   // vario in m/s (vel.y*0.1)
   if(!audioCtx||audioCtx.state!=='running'||!varioGain) return;
   const now=audioCtx.currentTime;
-  if(!audioOn){ varioGain.gain.setTargetAtTime(0, now, 0.05); return; }
+  if(!varioOn){ varioGain.gain.setTargetAtTime(0, now, 0.05); return; }   // independent of wind sound
   if(vario>0.15){                       // climbing -> beeps; faster & higher with stronger lift
     const c=Math.min(vario,4);
     varioOsc.frequency.setTargetAtTime(620+c*180, now, 0.02);
@@ -1027,7 +1063,7 @@ function loop(now){
     updateCamera(frame||FIXED, _rp, _rq); }
   updateFlex(frame||FIXED);
   if(state==='flying') updateTrails(_rp,_rq); else { trailR.mat.uniforms.uOpacity.value=0; trailL.mat.uniforms.uOpacity.value=0; }
-  updateBrakeFX();
+  updateBrakeFX(frame||FIXED);
   sky.position.copy(camera.position);
   sun.position.copy(_rp).add(SUN_OFFSET); sun.target.position.copy(_rp); sun.target.updateMatrixWorld();
   sunDisc.position.copy(camera.position).addScaledVector(SUN_DIR,44000);
@@ -1071,6 +1107,8 @@ window.__swooper={
   clearance(){ return +clearanceNow().toFixed(0); },
   crashState(){ return {on:crashOn, state}; }, setCrash(v){ crashOn=v; },
   trailOpacity(){ return +trailR.mat.uniforms.uOpacity.value.toFixed(3); }, setTrails(v){ trailsOn=v; },
+  trailTipDist(){ const c=trailR.cpos,n=c.length; return +Math.hypot(c[n-3]-glider.pos.x,c[n-2]-glider.pos.y,c[n-3+2]-glider.pos.z).toFixed(2); },
+  varioState(){ return varioOn; }, brakeFxOpacity(){ return +brkMat.opacity.toFixed(3); },
   orbit(az,el){ camOrbitAz=az; camOrbitEl=el; camIdle=0; }, camAz(){ return +camOrbitAz.toFixed(3); },
   audioState(){ return audioOn; },
   sunView(y=7000){ previewMode=true; gliderGroup.position.set(0,-99999,0); camera.position.set(0,y,0); camera.lookAt(new THREE.Vector3(0,y,0).add(SUN_DIR.clone().multiplyScalar(1000))); },
