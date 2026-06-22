@@ -86,10 +86,9 @@
 
 <script type="module">
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 window.__swooper = {};
 try {
-const VERSION = '0.41';
+const VERSION = '0.42';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -413,63 +412,75 @@ function buildProcGlider(){
   const fin=new THREE.Mesh(new THREE.BoxGeometry(0.16,2.0,1.6), matAcc); fin.position.set(0,1.0,10.6); g.add(fin);
   return g;
 }
-/* ---- swappable craft models: stock procedural + downloaded glb (1-9/0 to switch, T = restyle) ----
-   Models are CC0/CC-BY (credited in the model bar). Mesh is purely cosmetic — physics is a
-   point-mass + aero, so swapping the model never changes how it flies. */
+/* ---- swappable craft: stock glider + 5 realistic sailplanes (keys 1-6). All our OWN low-poly
+   meshes (clean licence, built to match the world). The mesh is purely cosmetic — physics is a
+   point-mass + aero, so the chosen model never changes how it flies. ---- */
+function buildSailplane(p){
+  const g=new THREE.Group();
+  const cBody =new THREE.MeshLambertMaterial({color:p.body, flatShading:true});
+  const cWing =new THREE.MeshLambertMaterial({color:p.wing, flatShading:true});
+  const cAcc  =new THREE.MeshLambertMaterial({color:p.acc,  flatShading:true});
+  const cGlass=new THREE.MeshLambertMaterial({color:0x243243, flatShading:true});
+  const th=0.1, half=p.span/2, root=p.chordRoot, tip=p.chordTip, boomLen=p.boomLen, tailZ=1.0+boomLen;
+  // fuselage: nose cone + cockpit pod + tapering tail boom  (forward = -Z, tail = +Z)
+  const nose=new THREE.Mesh(new THREE.ConeGeometry(0.5,2.6,12), cBody); nose.rotation.x=-Math.PI/2; nose.position.z=-3.4; g.add(nose);
+  const pod =new THREE.Mesh(new THREE.CylinderGeometry(0.58,0.5,3.6,12), cBody); pod.rotation.x=Math.PI/2; pod.position.z=-0.7; g.add(pod);
+  const boom=new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.12,boomLen,10), cBody); boom.rotation.x=Math.PI/2; boom.position.z=1.0+boomLen/2; g.add(boom);
+  const can =new THREE.Mesh(new THREE.SphereGeometry(0.46,12,9), cGlass); can.scale.set(1,0.82,2.6); can.position.set(0,0.4,-1.7); g.add(can);
+  if(p.prop){ const spin=new THREE.Mesh(new THREE.ConeGeometry(0.26,0.7,10), cAcc); spin.rotation.x=-Math.PI/2; spin.position.z=-4.7; g.add(spin);
+    const b1=new THREE.Mesh(new THREE.BoxGeometry(0.16,3.0,0.07), cBody); b1.position.z=-4.55; g.add(b1);
+    const b2=b1.clone(); b2.rotation.z=Math.PI/2; g.add(b2); }
+  // wing half: inner panel (root chord) + tapered outer panel + leading-edge accent stripe
+  function wing(sign){
+    const grp=new THREE.Group(), iL=half*0.5, oL=half*0.5;
+    grp.add(new THREE.Mesh(new THREE.BoxGeometry(iL,th,root).translate(sign*iL/2,0,0), cWing));
+    grp.add(new THREE.Mesh(new THREE.BoxGeometry(oL,th*0.85,(root+tip)/2).translate(sign*(iL+oL/2),0,(root-tip)*0.2), cWing));
+    grp.add(new THREE.Mesh(new THREE.BoxGeometry(half,th*1.05,0.18).translate(sign*half/2,0,-root/2+0.1), cAcc));
+    if(p.winglet){ const wl=new THREE.Mesh(new THREE.BoxGeometry(0.1,0.95,tip*0.7), cAcc); wl.position.set(sign*half,0.46,(root-tip)*0.2); grp.add(wl); }
+    grp.position.set(sign*0.45,p.wingY,p.wingZ); grp.rotation.z=sign*p.dih; if(p.sweep) grp.rotation.y=sign*p.sweep;
+    return grp;
+  }
+  g.add(wing(1)); g.add(wing(-1));
+  if(p.struts){ for(const s of [1,-1]){ const len=Math.hypot(half*0.34-0.4, p.wingY+0.1);
+    const st=new THREE.Mesh(new THREE.BoxGeometry(len,0.08,0.08), cBody);
+    st.position.set(s*(0.4+half*0.34)/2, (p.wingY-0.1)/2, p.wingZ);
+    st.rotation.z=s*Math.atan2(p.wingY+0.1, half*0.34-0.4); g.add(st); } }
+  // tail: vertical fin + horizontal stab (T / cruciform / conventional)
+  const fin=new THREE.Mesh(new THREE.BoxGeometry(0.14,p.finH,1.5), cAcc); fin.position.set(0,p.finH/2,tailZ-0.2); g.add(fin);
+  const hsY = p.tail==='T'?p.finH : p.tail==='cross'?p.finH*0.5 : 0.15;
+  const hs=new THREE.Mesh(new THREE.BoxGeometry(p.tail==='conv'?3.4:3.6,0.12,0.9), cWing); hs.position.set(0,hsY,tailZ-0.2); g.add(hs);
+  g.traverse(o=>{ if(o.isMesh) o.castShadow=true; });
+  return g;
+}
+const SAILPLANES={
+  classic:{ name:'Классический планёр',  span:18, chordRoot:1.5, chordTip:0.9,  dih:0.05,  boomLen:8.2, wingY:0.25, wingZ:-0.6, finH:2.0, tail:'T',                 body:0xeef0f4, wing:0xdfe3ea, acc:0xcf4036 },
+  racing :{ name:'Гоночный (15м, винглеты)', span:15, chordRoot:1.1, chordTip:0.55, dih:0.025, boomLen:7.6, wingY:0.18, wingZ:-0.4, finH:1.9, tail:'T', winglet:true, body:0xf3f5f8, wing:0xe6eaf0, acc:0x2f6bd0 },
+  open   :{ name:'Открытый класс (длинное крыло)', span:27, chordRoot:1.1, chordTip:0.5, dih:0.06, boomLen:8.8, wingY:0.22, wingZ:-0.5, finH:2.1, tail:'T',         body:0xf2f4f7, wing:0xe9edf2, acc:0x37a06a },
+  motor  :{ name:'Мотопланёр',           span:16, chordRoot:1.4, chordTip:0.9,  dih:0.035, boomLen:7.4, wingY:0.2,  wingZ:-0.5, finH:1.8, tail:'cross', prop:true,  body:0xeae6d8, wing:0xd6d2c4, acc:0xe8b04b },
+  vintage:{ name:'Винтажный планёр',     span:14, chordRoot:1.7, chordTip:1.1,  dih:0.085, boomLen:6.8, wingY:0.7,  wingZ:-0.5, finH:1.7, tail:'conv', struts:true, body:0xb98a4e, wing:0xcdb083, acc:0x6f4a28 },
+};
 const MODELS=[
-  { name:'Stock glider',        kind:'proc',                              author:'swooper',          license:'—' },
-  { name:'Small Airplane',      file:'small_airplane',  rotY:0,   len:18, author:'Vojtěch Balák',    license:'CC-BY' },
-  { name:'Biplane (Airco DH2)', file:'biplane_dh2',     rotY:90,  len:18, author:'Joshua Johanson',  license:'CC-BY' },
-  { name:'Boeing 747',          file:'boeing747',       rotY:-90, len:22, author:'Miha Lunar',       license:'CC-BY' },
-  { name:'Sea Plane',           file:'sea_plane',       rotY:-90, len:18, author:'Neil M',           license:'CC-BY' },
-  { name:'Hang glider',         file:'hang_glider',     rotY:0,   len:16, author:'Poly / Google',    license:'CC-BY' },
-  { name:'Jet',                 file:'jet',             rotY:180, len:19, author:'Poly / Google',    license:'CC-BY' },
-  { name:'Spaceship',           file:'spaceship_q',     rotY:0,   len:18, author:'Quaternius',       license:'CC0' },
-  { name:'Speeder',             file:'speeder_kenney',  rotY:0,   len:15, author:'Kenney',           license:'CC0' },
-  { name:'Flying saucer',       file:'flying_saucer',   rotY:0,   len:14, author:'Poly / Google',    license:'CC-BY' },
+  { name:'Сток-планёр',           build:buildProcGlider },
+  { name:SAILPLANES.classic.name, build:()=>buildSailplane(SAILPLANES.classic) },
+  { name:SAILPLANES.racing.name,  build:()=>buildSailplane(SAILPLANES.racing) },
+  { name:SAILPLANES.open.name,    build:()=>buildSailplane(SAILPLANES.open) },
+  { name:SAILPLANES.motor.name,   build:()=>buildSailplane(SAILPLANES.motor) },
+  { name:SAILPLANES.vintage.name, build:()=>buildSailplane(SAILPLANES.vintage) },
 ];
 const gliderGroup=new THREE.Group(); scene.add(gliderGroup);
 const craftHolder=new THREE.Group(); gliderGroup.add(craftHolder);
-const _gltf=new GLTFLoader(), _modelCache={};
-let currentModelIdx=0, restyleOn=false;
-const CREAM=new THREE.Color(0xece7da);
-function applyStyle(root, restyle){
-  root.traverse(o=>{ if(!o.isMesh) return; o.castShadow=true; o.receiveShadow=false;
-    if(restyle){
-      const hasVC=!!(o.geometry.attributes && o.geometry.attributes.color);
-      let col;
-      if(hasVC) col=new THREE.Color(0xffffff);
-      else { const sc=(o.material&&o.material.color)?o.material.color.clone():new THREE.Color(0xcfd3da); sc.lerp(CREAM,0.30); col=sc; }
-      o.material=new THREE.MeshLambertMaterial({color:col, flatShading:true, vertexColors:hasVC});
-    }
-  });
-}
-function prepModel(m){                                  // -> Promise<normalized wrapper Group>
-  if(_modelCache[m.file]) return Promise.resolve(_modelCache[m.file]);
-  return new Promise((res,rej)=>{ _gltf.load(`models/${m.file}.glb`, g=>{
-    const root=g.scene, box=new THREE.Box3().setFromObject(root), sz=new THREE.Vector3(), ctr=new THREE.Vector3();
-    box.getSize(sz); box.getCenter(ctr); root.position.sub(ctr);             // center at origin
-    const inner=new THREE.Group(); inner.add(root); inner.rotation.y=(m.rotY||0)*Math.PI/180;
-    const wrap=new THREE.Group(); wrap.add(inner);
-    const maxd=Math.max(sz.x,sz.y,sz.z)||1; wrap.scale.setScalar((m.len||18)/maxd);
-    _modelCache[m.file]=wrap; res(wrap);
-  }, undefined, rej); });
-}
+let currentModelIdx=0, previewMode=false;
 function clearHolder(){ while(craftHolder.children.length) craftHolder.remove(craftHolder.children[0]); }
 function setModel(idx){
   idx=((idx%MODELS.length)+MODELS.length)%MODELS.length; currentModelIdx=idx;
-  const m=MODELS[idx]; updateModelBar();
-  if(m.kind==='proc'){ clearHolder(); const g=buildProcGlider(); applyStyle(g,false); craftHolder.add(g); return; }
-  wingL=wingR=null;                                     // imported models: no wing-flex
-  prepModel(m).then(wrap=>{ if(currentModelIdx!==idx) return; clearHolder();
-    const inst=wrap.clone(true); applyStyle(inst, restyleOn); craftHolder.add(inst);
-  }).catch(e=>console.warn('model load failed', m.file, e));
+  wingL=wingR=null;                       // only the stock glider sets these (wing-flex)
+  clearHolder(); craftHolder.add(MODELS[idx].build());
+  updateModelBar();
 }
 function updateModelBar(){
-  const m=MODELS[currentModelIdx], el=document.getElementById('modelbar'); if(!el) return;
-  el.innerHTML=`<b>${currentModelIdx+1}. ${m.name}</b>  <span class="dim">${m.author} · ${m.license}</span>`
-    +`<span class="dim"> — стиль: ${currentModelIdx===0?'—':(restyleOn?'наш':'оригинал')}</span>`
-    +`<br><span class="dim">1-9,0 — модель · T — стиль</span>`;
+  const el=document.getElementById('modelbar'); if(!el) return;
+  el.innerHTML=`<b>${currentModelIdx+1}. ${MODELS[currentModelIdx].name}</b>`
+    +`<br><span class="dim">1-${MODELS.length} — модель планёра</span>`;
 }
 setModel(0);
 
@@ -481,8 +492,7 @@ addEventListener('keydown',e=>{ if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRigh
   keys[e.code]=true;
   if(e.code==='KeyR'){ if(state!=='menu') startFlight(); }
   else if(e.code==='KeyM'){ audioOn=!audioOn; }
-  else if(e.code==='KeyT'){ restyleOn=!restyleOn; setModel(currentModelIdx); }   // toggle original/our style
-  else if(/^Digit[0-9]$/.test(e.code)){ const d=+e.code.slice(5); setModel(d===0?9:d-1); }  // 1..9 -> models, 0 -> 10th
+  else if(/^Digit[1-9]$/.test(e.code)){ const d=+e.code.slice(5); if(d<=MODELS.length) setModel(d-1); }  // 1..6 -> craft model
   else if(e.code==='Escape'){ if(state==='flying'){ state='paused'; pauseEl.classList.remove('hidden'); silenceAudio(); } }
   else if(e.code==='Space'){ if(state==='menu') startFlight(); else if(state==='paused') resumeFlight(); } });
 addEventListener('keyup',e=>{ keys[e.code]=false; });
@@ -506,6 +516,7 @@ function startFlight(){
   rawH=rawV=horizontalInput=verticalInput=0;
   prevPos.copy(glider.pos); prevQ.copy(glider.q);
   updateTerrain(); cloudCX=null; updateClouds();
+  previewMode=false;
   state='flying'; menuEl.classList.add('hidden'); pauseEl.classList.add('hidden');
 }
 
@@ -818,8 +829,8 @@ function loop(now){
   const alpha = state==='flying' ? clamp(acc/FIXED,0,1) : 1;
   _rp.lerpVectors(prevPos, glider.pos, alpha);
   _rq.copy(prevQ).slerp(glider.q, alpha);
-  gliderGroup.position.copy(_rp); gliderGroup.quaternion.copy(_rq);
-  updateCamera(frame||FIXED, _rp, _rq);
+  if(!previewMode){ gliderGroup.position.copy(_rp); gliderGroup.quaternion.copy(_rq);
+    updateCamera(frame||FIXED, _rp, _rq); }
   updateWings(frame||FIXED);
   sky.position.copy(camera.position);
   sun.position.copy(_rp).add(SUN_OFFSET); sun.target.position.copy(_rp); sun.target.updateMatrixWorld();
@@ -849,8 +860,10 @@ window.__swooper={
   tstr(x,z){ return +thermalStrength(x,z).toFixed(3); },
   windBase(x,z){ const v=windBaseAt(x,z,simTime,new THREE.Vector3()); return {x:+v.x.toFixed(1),z:+v.z.toFixed(1),mag:+Math.hypot(v.x,v.z).toFixed(1),ang:+(Math.atan2(v.x,-v.z)*DEG).toFixed(0)}; },
   cloudCount(){ let n=0; for(let i=0;i<cloudSize.array.length;i++) if(cloudSize.array[i]>0) n++; return n; },
-  setModel(i){ setModel(i); }, toggleStyle(){ restyleOn=!restyleOn; setModel(currentModelIdx); return restyleOn; },
-  modelInfo(){ const m=MODELS[currentModelIdx]; let meshes=0,tris=0; craftHolder.traverse(o=>{ if(o.isMesh){ meshes++; const g=o.geometry; if(g&&g.index) tris+=g.index.count/3; else if(g&&g.attributes.position) tris+=g.attributes.position.count/3; } }); return {idx:currentModelIdx, name:m.name, license:m.license, restyle:restyleOn, meshes, tris:Math.round(tris)}; },
+  setModel(i){ setModel(i); }, modelCount(){ return MODELS.length; },
+  preview(i,dist=16,az=0.7,el=0.34){ setModel(i); previewMode=true; gliderGroup.position.set(0,0,0); gliderGroup.quaternion.identity();
+    camera.position.set(Math.sin(az)*Math.cos(el)*dist, Math.sin(el)*dist, Math.cos(az)*Math.cos(el)*dist); camera.lookAt(0,0.4,0); },
+  modelInfo(){ const m=MODELS[currentModelIdx]; let meshes=0,tris=0; craftHolder.traverse(o=>{ if(o.isMesh){ meshes++; const g=o.geometry; if(g&&g.index) tris+=g.index.count/3; else if(g&&g.attributes.position) tris+=g.attributes.position.count/3; } }); return {idx:currentModelIdx, name:m.name, meshes, tris:Math.round(tris)}; },
   varioGainNow(){ return varioGain?+varioGain.gain.value.toFixed(4):-1; },
   camUpWorldY(){ return +(new THREE.Vector3(0,1,0).applyQuaternion(camera.quaternion).y).toFixed(3); },
   camDist(){ return +camera.position.distanceTo(gliderGroup.position).toFixed(1); },
