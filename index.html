@@ -19,7 +19,12 @@
   #i-alt{ right:96px; top:50%; transform:translateY(-50%); }
   #i-vario{ right:22px; top:50%; transform:translateY(-50%); }
   #i-wind{ left:24px; bottom:22px; }
-  #stallw{ position:absolute; top:74px; left:50%; transform:translateX(-50%); color:#ff5d4d; font-weight:800;
+  #i-baro{ left:50%; bottom:16px; transform:translateX(-50%); }
+  #i-map{ right:22px; bottom:18px; }
+  #i-g{ left:24px; top:14px; }
+  #i-slip{ left:50%; top:80px; transform:translateX(-50%); }
+  #i-mc{ right:12px; top:30px; }
+  #stallw{ position:absolute; top:112px; left:50%; transform:translateX(-50%); color:#ff5d4d; font-weight:800;
     font-size:15px; letter-spacing:2px; opacity:0; transition:opacity .1s; text-shadow:0 1px 6px rgba(0,0,0,.6); }
   #stallw.on{ opacity:1; }
   #tag{ position:absolute; bottom:8px; left:12px; font-size:11px; font-weight:700; letter-spacing:2px; opacity:.4; }
@@ -79,6 +84,11 @@
   <div id="i-alt" class="inst-wrap"></div>
   <div id="i-vario" class="inst-wrap"></div>
   <div id="i-wind" class="inst-wrap"></div>
+  <div id="i-baro" class="inst-wrap"></div>
+  <div id="i-map" class="inst-wrap"></div>
+  <div id="i-g" class="inst-wrap"></div>
+  <div id="i-slip" class="inst-wrap"></div>
+  <div id="i-mc" class="inst-wrap"></div>
   <div id="stallw">⚠ STALL</div>
   <div id="fps"></div>
   <div id="tag">swooper</div>
@@ -139,7 +149,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.58';
+const VERSION = '0.59';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -786,7 +796,7 @@ function startFlight(){
   rawH=rawV=horizontalInput=verticalInput=0;
   prevPos.copy(glider.pos); prevQ.copy(glider.q);
   updateTerrain(); cloudCX=null; updateClouds();
-  brake=0; nearMiss=0; camOrbitAz=0; camOrbitEl=0; camIdle=0; dragging=false; camBase.set(NaN,0,0);
+  brake=0; nearMiss=0; camOrbitAz=0; camOrbitEl=0; camIdle=0; dragging=false; camBase.set(NaN,0,0); resetInst();
   seedTrail(trailR,1,glider.pos,glider.q); seedTrail(trailL,-1,glider.pos,glider.q);
   previewMode=false;
   state='flying'; menuEl.classList.add('hidden'); pauseChip.classList.add('hidden'); settingsEl.classList.add('hidden'); crashEl.classList.add('hidden');
@@ -1050,11 +1060,95 @@ function updWind(hdg){                                        // live LOCAL wind
   wVal.textContent=Math.round(mag*MPS);
 }
 
+/* ===================== D1 — extra instruments (barograph, G, slip, TE-vario, MacCready, minimap) ===================== */
+// total-energy vario: a 2nd (cream, hollow) needle on the existing vario gauge
+const vTENeedle=E('polygon',{points:`${VW-16},${VCY} ${VW-9},${VCY-4} ${VW-9},${VCY+4}`,fill:'none',stroke:C_CREAM,'stroke-width':1.2,opacity:0.85},vsvg);
+let prevTE=0, teVarioS=0;
+function updTEVario(ms){ const c=Math.max(-6,Math.min(6,ms)), y=VCY-c*VPX; vTENeedle.setAttribute('points',`${VW-16},${y} ${VW-9},${y-4} ${VW-9},${y+4}`); }
+
+// ---- barograph: altitude vs time (scrolls) ----
+const BARO_W=190, BARO_H=66, BARO_N=150, BARO_PT=14, BARO_PB=5;
+const baroSvg=E('svg',{viewBox:`0 0 ${BARO_W} ${BARO_H}`,width:BARO_W,height:BARO_H,class:'inst'},document.getElementById('i-baro'));
+E('rect',{x:0,y:0,width:BARO_W,height:BARO_H,rx:4,fill:C_BG},baroSvg);
+E('text',{x:6,y:11,'font-size':9,fill:C_CREAM,opacity:0.7,'font-family':MONO},baroSvg).textContent='ВЫСОТА м';
+const baroPath=E('polyline',{fill:'none',stroke:C_AMBER,'stroke-width':1.6,'stroke-linejoin':'round',opacity:0.95},baroSvg);
+const baroHi=E('text',{x:BARO_W-4,y:11,'text-anchor':'end','font-size':9,fill:C_CREAM,opacity:0.75,'font-family':MONO},baroSvg);
+const baroLo=E('text',{x:BARO_W-4,y:BARO_H-4,'text-anchor':'end','font-size':9,fill:C_CREAM,opacity:0.75,'font-family':MONO},baroSvg);
+const baroBuf=new Float32Array(BARO_N); let baroLen=0, baroT=0;
+function updBaro(alt,dt){
+  baroT+=dt; if(baroT>=0.5){ baroT=0; if(baroLen<BARO_N) baroBuf[baroLen++]=alt; else { baroBuf.copyWithin(0,1); baroBuf[BARO_N-1]=alt; } }
+  if(baroLen<2){ baroPath.setAttribute('points',''); return; }
+  let mn=Infinity,mx=-Infinity; for(let i=0;i<baroLen;i++){ const v=baroBuf[i]; if(v<mn)mn=v; if(v>mx)mx=v; }
+  if(mx-mn<60){ const c=(mx+mn)/2; mn=c-30; mx=c+30; }
+  const h=BARO_H-BARO_PT-BARO_PB; let pts='';
+  for(let i=0;i<baroLen;i++){ const x=(i/(BARO_N-1))*BARO_W, y=BARO_PT+h*(1-(baroBuf[i]-mn)/(mx-mn)); pts+=x.toFixed(1)+','+y.toFixed(1)+' '; }
+  baroPath.setAttribute('points',pts.trim()); baroHi.textContent=Math.round(mx); baroLo.textContent=Math.round(mn);
+}
+
+// ---- slip/skid ball (sideslip β) ----
+const SL_W=86, SL_H=26, SLC=SL_W/2, SLY=15;
+const slSvg=E('svg',{viewBox:`0 0 ${SL_W} ${SL_H}`,width:SL_W,height:SL_H,class:'inst'},document.getElementById('i-slip'));
+E('rect',{x:0,y:4,width:SL_W,height:SL_H-6,rx:9,fill:C_BG},slSvg);
+E('line',{x1:SLC-7,y1:7,x2:SLC-7,y2:SL_H-5,stroke:C_CREAM,'stroke-width':1,opacity:0.5},slSvg);
+E('line',{x1:SLC+7,y1:7,x2:SLC+7,y2:SL_H-5,stroke:C_CREAM,'stroke-width':1,opacity:0.5},slSvg);
+const slBall=E('circle',{cx:SLC,cy:SLY,r:5,fill:C_AMBER,stroke:C_INK,'stroke-width':0.8},slSvg);
+function updSlip(beta){ slBall.setAttribute('cx', clamp(SLC+beta*120,12,SL_W-12).toFixed(1)); }
+
+// ---- G-meter (load factor) ----
+const GW=84, GH=58, GcX=GW/2, GcY=GH-8, GRr=34, Gmin=-1.5, Gmax=5;
+const gSvg=E('svg',{viewBox:`0 0 ${GW} ${GH}`,width:GW,height:GH,class:'inst'},document.getElementById('i-g'));
+E('rect',{x:0,y:0,width:GW,height:GH,rx:4,fill:C_BG},gSvg);
+E('text',{x:6,y:11,'font-size':9,fill:C_CREAM,opacity:0.7,'font-family':MONO},gSvg).textContent='G';
+function gAng(g){ return Math.PI*(1-(clamp(g,Gmin,Gmax)-Gmin)/(Gmax-Gmin)); }
+for(let g=-1;g<=5;g++){ const a=gAng(g), c=Math.cos(a), s=Math.sin(a);
+  E('line',{x1:GcX+c*GRr,y1:GcY-s*GRr,x2:GcX+c*(GRr-5),y2:GcY-s*(GRr-5),stroke:C_CREAM,'stroke-width':(g===0||g===1)?1.4:0.8,opacity:0.6},gSvg); }
+const gNeedle=E('line',{x1:GcX,y1:GcY,x2:GcX,y2:GcY-GRr,stroke:C_AMBER,'stroke-width':2,'stroke-linecap':'round'},gSvg);
+const gVal=E('text',{x:GW-5,y:11,'text-anchor':'end','font-size':10,fill:C_AMBER,'font-weight':600,'font-family':MONO},gSvg);
+function updG(g){ const a=gAng(g); gNeedle.setAttribute('x2',(GcX+Math.cos(a)*GRr).toFixed(1)); gNeedle.setAttribute('y2',(GcY-Math.sin(a)*GRr).toFixed(1)); gVal.textContent=g.toFixed(1); }
+
+// ---- MacCready speed-to-fly ----
+const MCW=78, MCH=40, MC_SETTING=2.0;
+const mcSvg=E('svg',{viewBox:`0 0 ${MCW} ${MCH}`,width:MCW,height:MCH,class:'inst'},document.getElementById('i-mc'));
+E('rect',{x:0,y:0,width:MCW,height:MCH,rx:4,fill:C_BG},mcSvg);
+E('text',{x:6,y:14,'font-size':9,fill:C_CREAM,opacity:0.7,'font-family':MONO},mcSvg).textContent='MC';
+E('text',{x:MCW-6,y:14,'text-anchor':'end','font-size':10,fill:C_CREAM,'font-family':MONO},mcSvg).textContent=MC_SETTING.toFixed(1);
+E('text',{x:6,y:33,'font-size':9,fill:C_CREAM,opacity:0.7,'font-family':MONO},mcSvg).textContent='STF';
+const mcStf=E('text',{x:MCW-6,y:33,'text-anchor':'end','font-size':14,fill:C_AMBER,'font-weight':600,'font-family':MONO},mcSvg);
+function updMC(airmassMS){ mcStf.textContent=Math.round(clamp(40+(MC_SETTING-airmassMS)*3.2, 28, 95)); }   // faster in sink, slower in lift
+
+// ---- minimap: heading-up, thermal cores as dots ----
+const MAP=98, MAPC=MAP/2, MAP_RANGE=2600, MAP_DOTS=25;
+const mapSvg=E('svg',{viewBox:`0 0 ${MAP} ${MAP}`,width:MAP,height:MAP,class:'inst'},document.getElementById('i-map'));
+E('circle',{cx:MAPC,cy:MAPC,r:MAPC-1,fill:C_BG,stroke:C_CREAM,'stroke-width':1,'stroke-opacity':0.4},mapSvg);
+const mapDots=[]; for(let i=0;i<MAP_DOTS;i++) mapDots.push(E('circle',{r:2.4,fill:'#e2b15a',opacity:0},mapSvg));
+const mapN=E('text',{'text-anchor':'middle','font-size':9,fill:C_CREAM,opacity:0.85,'font-family':MONO},mapSvg); mapN.textContent='N';
+E('polygon',{points:`${MAPC},${MAPC-6} ${MAPC-4},${MAPC+5} ${MAPC+4},${MAPC+5}`,fill:C_AMBER},mapSvg);   // glider (always up=forward)
+function updMap(hdg){
+  const hr=hdg*Math.PI/180, sh=Math.sin(hr), ch=Math.cos(hr), rr=MAPC-6;
+  mapN.setAttribute('x',(MAPC-sh*(MAPC-9)).toFixed(1)); mapN.setAttribute('y',(MAPC-ch*(MAPC-9)+3).toFixed(1));   // north, heading-up
+  const gx=glider.pos.x, gz=glider.pos.z, step=MAP_RANGE/2; let d=0;
+  for(let iz=-2;iz<=2 && d<MAP_DOTS;iz++) for(let ix=-2;ix<=2 && d<MAP_DOTS;ix++){
+    const rx=ix*step, rz=iz*step, s=thermalStrength(gx+rx, gz+rz);
+    if(s>0.45){
+      const along=rx*sh - rz*ch, cross=rx*ch + rz*sh;            // rotate world offset into heading-up frame
+      const px=MAPC+(cross/MAP_RANGE)*rr, py=MAPC-(along/MAP_RANGE)*rr;
+      if(Math.hypot(px-MAPC,py-MAPC)<=rr){ const dt2=mapDots[d++]; dt2.setAttribute('cx',px.toFixed(1)); dt2.setAttribute('cy',py.toFixed(1)); dt2.setAttribute('r',(2+s*2.6).toFixed(1)); dt2.setAttribute('opacity',(0.3+s*0.6).toFixed(2)); }
+    }
+  }
+  for(;d<MAP_DOTS;d++) mapDots[d].setAttribute('opacity',0);
+}
+function resetInst(){ baroLen=0; baroT=0; prevTE=glider.pos.y+(glider.airspeed*glider.airspeed)/(2*G); teVarioS=0; }
+
 function updateHUD(dt){
-  const air=glider.airspeed*MPS, alt=glider.pos.y*MPS+ALT_BASE, hdg=Math.atan2(_f.x,-_f.z)*DEG, vario=glider.vel.y*MPS;
+  const dts=dt||FIXED, air0=glider.airspeed;
+  const air=air0*MPS, alt=glider.pos.y*MPS+ALT_BASE, hdg=Math.atan2(_f.x,-_f.z)*DEG, vario=glider.vel.y*MPS;
   updHdg(hdg); updVtape(asi,air); updVtape(alti,alt); updVario(vario); updWind(hdg);
+  const TE=glider.pos.y+(air0*air0)/(2*G), teRate=(TE-prevTE)/dts; prevTE=TE;     // total-energy vario
+  teVarioS += ((teRate*MPS)-teVarioS)*clamp(dts*4,0,1); updTEVario(teVarioS);
+  const airmass=windLift(glider.pos.x,glider.pos.y,glider.pos.z,simTime)*MPS;       // vertical air motion (MacCready)
+  updG(glider.gload); updSlip(lastBeta); updBaro(alt,dts); updMap(hdg); updMC(airmass);
   stallW.classList.toggle('on', glider.stall>0.4);
-  updateAudio(); updateVarioSound(vario, dt||FIXED);
+  updateAudio(); updateVarioSound(vario, dts);
 }
 
 /* ===================== AUDIO (procedural wind + variometer beep) ===================== */
