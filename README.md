@@ -9,14 +9,14 @@ Inspired by *Superflight*, but a clean-room original: our own code, our own flig
 ## Controls (keyboard)
 - **↓ / S** — nose up · **↑ / W** — nose down
 - **← / →** (or **A / D**) — roll / turn · **Q / E** — yaw (rudder)
-- **1–6** — switch glider model (stock + 5 sailplanes)
+- **1–5** — wing/body **flexibility mode** (rigid · simple · advanced cantilever · fuselage whip · combined)
 - **M** — mute/unmute sound · **R** — restart · **Esc** — pause · **Space** — resume
 
 ## Finding lift (soaring)
 Dark patches on the ground and **cumulus clouds** mark strong thermals. Fly toward them, listen for the **variometer beep** (faster/higher = climbing), then circle to stay in the rising column.
 
-## Glider models
-Six low-poly gliders to fly: the stock glider plus five hand-built sailplanes — classic, racing (15m, winglets), open-class (long wing), motor-glider, and vintage. All models, code, physics and world are original.
+## Flexible wings
+The glider's wings and tail boom flex under aerodynamic load (G). Five flex models can be compared with keys **1–5**: rigid, simple root-bow, advanced multi-segment cantilever (the tip bows most, with spring-damper dynamics and a gust ripple), fuselage/boom whip, and combined. The flex is purely visual — physics is a point-mass, so it never changes how the glider flies.
 
 Single `index.html`, Three.js via CDN, no build step.
 

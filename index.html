@@ -88,7 +88,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.42';
+const VERSION = '0.43';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -142,9 +142,6 @@ const REF_V = 130, QD_REF = QA*REF_V*REF_V, Q_CAP = 2.2;
 const MAXW = 7.0, INIT_SPEED = 150, AXIS_RATE = 6.0;
 
 const SPD_LO = 90, SPD_HI = 250;     // camera/HUD speed normalization
-
-// cheap wing flex: wings hinge at the root, bow up ∝ aerodynamic load (G)
-const WING_BASE_DIH = 0.05, WING_BEND_PER_G = 0.05;
 
 // wind: steady breeze toward +X, plus strong buffeting gusts + sharp squalls
 const WIND = new THREE.Vector3(35, 0, 0);
@@ -385,104 +382,110 @@ function updateClouds(){
 const glider={ pos:new THREE.Vector3(), q:new THREE.Quaternion(), vel:new THREE.Vector3(), angVel:new THREE.Vector3(),
                airspeed:0, gndspeed:0, alpha:0, stall:0, gload:1 };
 const prevPos=new THREE.Vector3(), prevQ=new THREE.Quaternion();
-let wingL=null, wingR=null, bendSmooth=0;   // flexing wing refs + smoothed bend
-function buildProcGlider(){
-  const g=new THREE.Group();
-  const matBody =new THREE.MeshLambertMaterial({color:0xeceef2, flatShading:true});
-  const matWing =new THREE.MeshLambertMaterial({color:0xd2d6dd, flatShading:true});
-  const matAcc  =new THREE.MeshLambertMaterial({color:0xe8b04b, flatShading:true});
-  const matGlass=new THREE.MeshLambertMaterial({color:0x2b3440, flatShading:true});
-  // forward = -Z (nose), tail = +Z
-  const nose=new THREE.Mesh(new THREE.ConeGeometry(0.62,2.6,14), matBody); nose.rotation.x=-Math.PI/2; nose.position.z=-3.8; g.add(nose);
-  const fus =new THREE.Mesh(new THREE.CylinderGeometry(0.62,0.5,4.4,14), matBody); fus.rotation.x=Math.PI/2; fus.position.z=-0.5; g.add(fus);
-  const boom=new THREE.Mesh(new THREE.CylinderGeometry(0.5,0.16,9.5,12), matBody); boom.rotation.x=Math.PI/2; boom.position.z=6.4; g.add(boom);
-  const can =new THREE.Mesh(new THREE.SphereGeometry(0.62,14,10), matGlass); can.scale.set(1,0.7,2.1); can.position.set(0,0.5,-2.2); g.add(can);
-  // wings — high aspect; geometry origin at the ROOT so they hinge & flex from
-  // the fuselage. Tips are children -> they follow the bend. rotation.z animated.
-  const wingGeoL=new THREE.BoxGeometry(8.4,0.16,1.5).translate(-4.2,0,0);
-  const wingGeoR=new THREE.BoxGeometry(8.4,0.16,1.5).translate( 4.2,0,0);
-  const tipGeo=new THREE.BoxGeometry(0.8,0.18,1.2);
-  wingL=new THREE.Mesh(wingGeoL,matWing); wingL.position.set(-0.3,0.25,-1.0); wingL.rotation.y= 0.06; g.add(wingL);
-  wingR=new THREE.Mesh(wingGeoR,matWing); wingR.position.set( 0.3,0.25,-1.0); wingR.rotation.y=-0.06; g.add(wingR);
-  const tl=new THREE.Mesh(tipGeo,matAcc); tl.position.set(-8.1,0.30,0); wingL.add(tl);
-  const tr=new THREE.Mesh(tipGeo,matAcc); tr.position.set( 8.1,0.30,0); wingR.add(tr);
-  wingL.rotation.z=-WING_BASE_DIH; wingR.rotation.z=WING_BASE_DIH;
-  // long tail group at boom end (z≈10.7)
-  const hs=new THREE.Mesh(new THREE.BoxGeometry(4.2,0.14,1.0), matWing); hs.position.set(0,0.1,10.7); g.add(hs);
-  const fin=new THREE.Mesh(new THREE.BoxGeometry(0.16,2.0,1.6), matAcc); fin.position.set(0,1.0,10.6); g.add(fin);
-  return g;
-}
-/* ---- swappable craft: stock glider + 5 realistic sailplanes (keys 1-6). All our OWN low-poly
-   meshes (clean licence, built to match the world). The mesh is purely cosmetic — physics is a
-   point-mass + aero, so the chosen model never changes how it flies. ---- */
-function buildSailplane(p){
-  const g=new THREE.Group();
-  const cBody =new THREE.MeshLambertMaterial({color:p.body, flatShading:true});
-  const cWing =new THREE.MeshLambertMaterial({color:p.wing, flatShading:true});
-  const cAcc  =new THREE.MeshLambertMaterial({color:p.acc,  flatShading:true});
-  const cGlass=new THREE.MeshLambertMaterial({color:0x243243, flatShading:true});
-  const th=0.1, half=p.span/2, root=p.chordRoot, tip=p.chordTip, boomLen=p.boomLen, tailZ=1.0+boomLen;
-  // fuselage: nose cone + cockpit pod + tapering tail boom  (forward = -Z, tail = +Z)
-  const nose=new THREE.Mesh(new THREE.ConeGeometry(0.5,2.6,12), cBody); nose.rotation.x=-Math.PI/2; nose.position.z=-3.4; g.add(nose);
-  const pod =new THREE.Mesh(new THREE.CylinderGeometry(0.58,0.5,3.6,12), cBody); pod.rotation.x=Math.PI/2; pod.position.z=-0.7; g.add(pod);
-  const boom=new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.12,boomLen,10), cBody); boom.rotation.x=Math.PI/2; boom.position.z=1.0+boomLen/2; g.add(boom);
-  const can =new THREE.Mesh(new THREE.SphereGeometry(0.46,12,9), cGlass); can.scale.set(1,0.82,2.6); can.position.set(0,0.4,-1.7); g.add(can);
-  if(p.prop){ const spin=new THREE.Mesh(new THREE.ConeGeometry(0.26,0.7,10), cAcc); spin.rotation.x=-Math.PI/2; spin.position.z=-4.7; g.add(spin);
-    const b1=new THREE.Mesh(new THREE.BoxGeometry(0.16,3.0,0.07), cBody); b1.position.z=-4.55; g.add(b1);
-    const b2=b1.clone(); b2.rotation.z=Math.PI/2; g.add(b2); }
-  // wing half: inner panel (root chord) + tapered outer panel + leading-edge accent stripe
-  function wing(sign){
-    const grp=new THREE.Group(), iL=half*0.5, oL=half*0.5;
-    grp.add(new THREE.Mesh(new THREE.BoxGeometry(iL,th,root).translate(sign*iL/2,0,0), cWing));
-    grp.add(new THREE.Mesh(new THREE.BoxGeometry(oL,th*0.85,(root+tip)/2).translate(sign*(iL+oL/2),0,(root-tip)*0.2), cWing));
-    grp.add(new THREE.Mesh(new THREE.BoxGeometry(half,th*1.05,0.18).translate(sign*half/2,0,-root/2+0.1), cAcc));
-    if(p.winglet){ const wl=new THREE.Mesh(new THREE.BoxGeometry(0.1,0.95,tip*0.7), cAcc); wl.position.set(sign*half,0.46,(root-tip)*0.2); grp.add(wl); }
-    grp.position.set(sign*0.45,p.wingY,p.wingZ); grp.rotation.z=sign*p.dih; if(p.sweep) grp.rotation.y=sign*p.sweep;
-    return grp;
+let previewMode=false;
+const gliderGroup=new THREE.Group(); scene.add(gliderGroup);
+const craftHolder=new THREE.Group(); gliderGroup.add(craftHolder);
+
+/* ===================== CRAFT: Classic sailplane + selectable FLEX modes (keys 1-5) =====================
+   Model is fixed (Classic). Number keys switch FLEX MODE so flex models can be compared live:
+     1 rigid · 2 simple root-bow · 3 advanced multi-segment cantilever wing · 4 fuselage(boom) whip · 5 combined.
+   Built ONCE with 3 nested wing segments per side + a hinged tail boom; modes differ only in how
+   updateFlex() drives those joints. Mesh is cosmetic — physics is a point mass, flex never affects flight. */
+const FLEX_MODES=['Жёсткое','Простое (корень)','Продвинутое (сегментное крыло)','Гибкий корпус (хвост-балка)','Комбо (крыло+корпус)'];
+let flexMode=2;
+const CLASSIC={ span:18, chordRoot:1.5, chordTip:0.9, dih:0.05, boomLen:8.2, wingY:0.25, wingZ:-0.6, finH:2.0,
+                body:0xeef0f4, wing:0xdfe3ea, acc:0xcf4036, glass:0x243243 };
+const flex={ ready:false };
+function buildFlexGlider(){
+  const p=CLASSIC, g=new THREE.Group();
+  const cBody=new THREE.MeshLambertMaterial({color:p.body,flatShading:true}),
+        cWing=new THREE.MeshLambertMaterial({color:p.wing,flatShading:true}),
+        cAcc =new THREE.MeshLambertMaterial({color:p.acc, flatShading:true}),
+        cGlass=new THREE.MeshLambertMaterial({color:p.glass,flatShading:true});
+  const th=0.1, half=p.span/2, root=p.chordRoot, tip=p.chordTip, boomLen=p.boomLen;
+  const jointZ=1.0+boomLen*0.42, tailZ=1.0+boomLen;
+  const nose=new THREE.Mesh(new THREE.ConeGeometry(0.5,2.6,12),cBody); nose.rotation.x=-Math.PI/2; nose.position.z=-3.4; g.add(nose);
+  const pod =new THREE.Mesh(new THREE.CylinderGeometry(0.58,0.5,3.6,12),cBody); pod.rotation.x=Math.PI/2; pod.position.z=-0.7; g.add(pod);
+  const can =new THREE.Mesh(new THREE.SphereGeometry(0.46,12,9),cGlass); can.scale.set(1,0.82,2.6); can.position.set(0,0.4,-1.7); g.add(can);
+  // tail boom: fixed front cylinder + hinged REAR group (carries fin+stab), pivots at jointZ
+  const rJoint=0.4-(0.4-0.12)*((jointZ-1.0)/boomLen), frontLen=jointZ-1.0, rearLen=tailZ-jointZ;
+  const boomF=new THREE.Mesh(new THREE.CylinderGeometry(0.4,rJoint,frontLen+0.1,10),cBody); boomF.rotation.x=Math.PI/2; boomF.position.z=1.0+frontLen/2; g.add(boomF);
+  const boomRear=new THREE.Group(); boomRear.position.z=jointZ; g.add(boomRear);
+  const boomR=new THREE.Mesh(new THREE.CylinderGeometry(rJoint,0.12,rearLen+0.1,10),cBody); boomR.rotation.x=Math.PI/2; boomR.position.z=rearLen/2-0.05; boomRear.add(boomR);
+  const fin=new THREE.Mesh(new THREE.BoxGeometry(0.14,p.finH,1.5),cAcc); fin.position.set(0,p.finH/2,rearLen-0.2); boomRear.add(fin);
+  const hs =new THREE.Mesh(new THREE.BoxGeometry(3.6,0.12,0.9),cWing); hs.position.set(0,p.finH,rearLen-0.2); boomRear.add(hs);
+  // segmented wing: 3 nested spanwise segments per side; each pivots from its inboard joint, bend compounds outboard
+  const segLen=[half*0.40,half*0.34,half*0.26], chordAt=x=>root+(tip-root)*clamp(x/half,0,1);
+  function buildWing(sign){
+    const segs=[]; let xIn=0; const rootGrp=new THREE.Group(); rootGrp.position.set(sign*0.45,p.wingY,p.wingZ);
+    for(let i=0;i<3;i++){
+      const grp = i===0 ? rootGrp : new THREE.Group();
+      if(i>0){ grp.position.set(sign*segLen[i-1],0,0); segs[i-1].add(grp); }
+      const L=segLen[i], cMid=(chordAt(xIn)+chordAt(xIn+L))/2;
+      grp.add(new THREE.Mesh(new THREE.BoxGeometry(L+0.12, th*(1-0.08*i), cMid).translate(sign*(L/2-0.06),0,(root-cMid)*0.18), cWing));
+      grp.add(new THREE.Mesh(new THREE.BoxGeometry(L+0.12, th*1.05, 0.16).translate(sign*(L/2-0.06),0,-cMid/2+0.08), cAcc));
+      segs.push(grp); xIn+=L;
+    }
+    segs[0].rotation.z=sign*p.dih; g.add(rootGrp); return segs;
   }
-  g.add(wing(1)); g.add(wing(-1));
-  if(p.struts){ for(const s of [1,-1]){ const len=Math.hypot(half*0.34-0.4, p.wingY+0.1);
-    const st=new THREE.Mesh(new THREE.BoxGeometry(len,0.08,0.08), cBody);
-    st.position.set(s*(0.4+half*0.34)/2, (p.wingY-0.1)/2, p.wingZ);
-    st.rotation.z=s*Math.atan2(p.wingY+0.1, half*0.34-0.4); g.add(st); } }
-  // tail: vertical fin + horizontal stab (T / cruciform / conventional)
-  const fin=new THREE.Mesh(new THREE.BoxGeometry(0.14,p.finH,1.5), cAcc); fin.position.set(0,p.finH/2,tailZ-0.2); g.add(fin);
-  const hsY = p.tail==='T'?p.finH : p.tail==='cross'?p.finH*0.5 : 0.15;
-  const hs=new THREE.Mesh(new THREE.BoxGeometry(p.tail==='conv'?3.4:3.6,0.12,0.9), cWing); hs.position.set(0,hsY,tailZ-0.2); g.add(hs);
+  flex.segR=buildWing(1); flex.segL=buildWing(-1); flex.boomRear=boomRear; flex.dih=p.dih;
+  flex.bend=0; flex.bendV=0; flex.asym=0; flex.droop=0; flex.droopV=0; flex.yaw=0; flex.yawV=0; flex.ready=true;
   g.traverse(o=>{ if(o.isMesh) o.castShadow=true; });
   return g;
 }
-const SAILPLANES={
-  classic:{ name:'Классический планёр',  span:18, chordRoot:1.5, chordTip:0.9,  dih:0.05,  boomLen:8.2, wingY:0.25, wingZ:-0.6, finH:2.0, tail:'T',                 body:0xeef0f4, wing:0xdfe3ea, acc:0xcf4036 },
-  racing :{ name:'Гоночный (15м, винглеты)', span:15, chordRoot:1.1, chordTip:0.55, dih:0.025, boomLen:7.6, wingY:0.18, wingZ:-0.4, finH:1.9, tail:'T', winglet:true, body:0xf3f5f8, wing:0xe6eaf0, acc:0x2f6bd0 },
-  open   :{ name:'Открытый класс (длинное крыло)', span:27, chordRoot:1.1, chordTip:0.5, dih:0.06, boomLen:8.8, wingY:0.22, wingZ:-0.5, finH:2.1, tail:'T',         body:0xf2f4f7, wing:0xe9edf2, acc:0x37a06a },
-  motor  :{ name:'Мотопланёр',           span:16, chordRoot:1.4, chordTip:0.9,  dih:0.035, boomLen:7.4, wingY:0.2,  wingZ:-0.5, finH:1.8, tail:'cross', prop:true,  body:0xeae6d8, wing:0xd6d2c4, acc:0xe8b04b },
-  vintage:{ name:'Винтажный планёр',     span:14, chordRoot:1.7, chordTip:1.1,  dih:0.085, boomLen:6.8, wingY:0.7,  wingZ:-0.5, finH:1.7, tail:'conv', struts:true, body:0xb98a4e, wing:0xcdb083, acc:0x6f4a28 },
-};
-const MODELS=[
-  { name:'Сток-планёр',           build:buildProcGlider },
-  { name:SAILPLANES.classic.name, build:()=>buildSailplane(SAILPLANES.classic) },
-  { name:SAILPLANES.racing.name,  build:()=>buildSailplane(SAILPLANES.racing) },
-  { name:SAILPLANES.open.name,    build:()=>buildSailplane(SAILPLANES.open) },
-  { name:SAILPLANES.motor.name,   build:()=>buildSailplane(SAILPLANES.motor) },
-  { name:SAILPLANES.vintage.name, build:()=>buildSailplane(SAILPLANES.vintage) },
-];
-const gliderGroup=new THREE.Group(); scene.add(gliderGroup);
-const craftHolder=new THREE.Group(); gliderGroup.add(craftHolder);
-let currentModelIdx=0, previewMode=false;
-function clearHolder(){ while(craftHolder.children.length) craftHolder.remove(craftHolder.children[0]); }
-function setModel(idx){
-  idx=((idx%MODELS.length)+MODELS.length)%MODELS.length; currentModelIdx=idx;
-  wingL=wingR=null;                       // only the stock glider sets these (wing-flex)
-  clearHolder(); craftHolder.add(MODELS[idx].build());
-  updateModelBar();
+craftHolder.add(buildFlexGlider());
+
+const FX={ K:13, ZUP:0.5, ZDN:1.0, BEND_G:0.05, BEND_MIN:-0.07, BEND_MAX:0.18, SEGW:[0.35,0.55,0.80],
+           ASYM_G:0.05, FLUT_AMP:0.012, FLUT_W:13, WASH:0.45,
+           BOOM_K:9, BOOM_Z:0.5, DROOP_G:0.05, DROOP_MIN:-0.05, DROOP_MAX:0.10, YAW_G:0.06, BOOM_FLUT:0.008 };
+const FLEX_SIDES=[['segL',-1],['segR',1]];
+function setFlexMode(i){
+  flexMode=((i%FLEX_MODES.length)+FLEX_MODES.length)%FLEX_MODES.length;
+  flex.bend=flex.bendV=flex.asym=flex.droop=flex.droopV=flex.yaw=flex.yawV=0;   // reset springs -> ease from rest
+  updateFlexBar();
 }
-function updateModelBar(){
+function updateFlex(dt){
+  if(!flex.ready) return;
+  dt=Math.min(dt,0.05); const m=flexMode, N=4, sdt=dt/N;
+  const exG=clamp(glider.gload-1,-1.5,4), roll=glider.pRoll||0, yaw=glider.rYaw||0, pitch=glider.qPitch||0;
+  const wingMode = (m===0||m===3)?'rigid' : (m===1)?'simple' : 'adv';   // m3 body-only -> rigid wings
+  // ---- wing-bend spring (substepped semi-implicit -> stable even at dt spikes) ----
+  const wantBend = wingMode==='rigid' ? 0 : clamp(exG*FX.BEND_G,FX.BEND_MIN,FX.BEND_MAX);
+  const zeta = wantBend<flex.bend?FX.ZDN:FX.ZUP;
+  for(let s=0;s<N;s++){ const a=FX.K*FX.K*(wantBend-flex.bend)-2*zeta*FX.K*flex.bendV; flex.bendV+=a*sdt; flex.bend+=flex.bendV*sdt; }
+  flex.bend=clamp(flex.bend,FX.BEND_MIN-0.03,FX.BEND_MAX+0.06);
+  const adv = wingMode==='adv';
+  const wantAsym = adv?clamp(roll*FX.ASYM_G,-0.06,0.06):0; flex.asym+=(wantAsym-flex.asym)*(1-Math.exp(-dt*8));
+  const flut = adv?FX.FLUT_AMP*(0.4+clamp(exG,0,3)*0.3)*Math.sin(simTime*FX.FLUT_W):0;
+  const wash = adv?-FX.WASH*Math.max(0,flex.bend):0;
+  for(const [key,sgn] of FLEX_SIDES){
+    const segs=flex[key];
+    if(wingMode==='rigid'){ segs[0].rotation.z=sgn*flex.dih; segs[1].rotation.z=0; segs[2].rotation.z=0; segs[2].rotation.x=0; }
+    else if(wingMode==='simple'){ segs[0].rotation.z=sgn*(flex.dih+flex.bend); segs[1].rotation.z=0; segs[2].rotation.z=0; segs[2].rotation.x=0; }
+    else { const B=flex.bend+sgn*flex.asym, f=(sgn>0?flut:-flut);
+      segs[0].rotation.z=sgn*(flex.dih+B*FX.SEGW[0]);
+      segs[1].rotation.z=sgn*(B*FX.SEGW[1])+f;
+      segs[2].rotation.z=sgn*(B*FX.SEGW[2])+f*1.6;
+      segs[2].rotation.x=wash; }
+  }
+  // ---- boom whip (body / combined); spring eases back to 0 in other modes ----
+  const boomOn = (m===3||m===4);
+  const wantDroop = boomOn?clamp(exG*FX.DROOP_G+pitch*0.03,FX.DROOP_MIN,FX.DROOP_MAX):0;
+  for(let s=0;s<N;s++){ const a=FX.BOOM_K*FX.BOOM_K*(wantDroop-flex.droop)-2*FX.BOOM_Z*FX.BOOM_K*flex.droopV; flex.droopV+=a*sdt; flex.droop+=flex.droopV*sdt; }
+  flex.droop=clamp(flex.droop,FX.DROOP_MIN-0.03,FX.DROOP_MAX+0.05);
+  const wantYaw = boomOn?clamp(-yaw*FX.YAW_G+lastBeta*0.06,-0.12,0.12):0;
+  for(let s=0;s<N;s++){ const a=FX.BOOM_K*FX.BOOM_K*(wantYaw-flex.yaw)-2*FX.BOOM_Z*FX.BOOM_K*flex.yawV; flex.yawV+=a*sdt; flex.yaw+=flex.yawV*sdt; }
+  flex.yaw=clamp(flex.yaw,-0.16,0.16);
+  const bflut = boomOn?FX.BOOM_FLUT*Math.sin(simTime*9.5):0;
+  flex.boomRear.rotation.x=flex.droop;        // +x = tail DOWN under +G (diving-board droop)
+  flex.boomRear.rotation.y=flex.yaw+bflut;
+}
+function updateFlexBar(){
   const el=document.getElementById('modelbar'); if(!el) return;
-  el.innerHTML=`<b>${currentModelIdx+1}. ${MODELS[currentModelIdx].name}</b>`
-    +`<br><span class="dim">1-${MODELS.length} — модель планёра</span>`;
+  el.innerHTML=`<b>Гибкость: ${flexMode+1}. ${FLEX_MODES[flexMode]}</b>`
+    +`<br><span class="dim">1-${FLEX_MODES.length} — тип гибкости</span>`;
 }
-setModel(0);
+updateFlexBar();
 
 /* ===================== INPUT (keyboard) ===================== */
 const keys={}; let sens=1, invert=false, state='menu', simTime=0, spawnY=0;
@@ -492,7 +495,7 @@ addEventListener('keydown',e=>{ if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRigh
   keys[e.code]=true;
   if(e.code==='KeyR'){ if(state!=='menu') startFlight(); }
   else if(e.code==='KeyM'){ audioOn=!audioOn; }
-  else if(/^Digit[1-9]$/.test(e.code)){ const d=+e.code.slice(5); if(d<=MODELS.length) setModel(d-1); }  // 1..6 -> craft model
+  else if(/^Digit[1-9]$/.test(e.code)){ const d=+e.code.slice(5); if(d<=FLEX_MODES.length) setFlexMode(d-1); }  // 1..5 -> flex mode
   else if(e.code==='Escape'){ if(state==='flying'){ state='paused'; pauseEl.classList.remove('hidden'); silenceAudio(); } }
   else if(e.code==='Space'){ if(state==='menu') startFlight(); else if(state==='paused') resumeFlight(); } });
 addEventListener('keyup',e=>{ keys[e.code]=false; });
@@ -599,6 +602,7 @@ function fixedStep(){
     // ----- torques (body axes) -----
     const qs=clamp(qd/QD_REF,0,Q_CAP);
     const pRoll=glider.angVel.dot(_f), qPitch=glider.angVel.dot(_r), rYaw=glider.angVel.dot(_u);
+    glider.pRoll=pRoll; glider.qPitch=qPitch; glider.rYaw=rYaw;     // body-frame rates -> flex driver
     let tRoll  = -ROLL_POWER*hIn*qs;
     let tPitch =  (vIn>0?PITCH_POWER_UP:PITCH_POWER_DOWN)*vIn*qs;   // gentler pull, fuller push
     let tYaw   = -YAW_CTRL*yIn*qs;                                  // E = yaw right (heading +)
@@ -662,13 +666,6 @@ function updateCamera(dt, rpos, rq){
   const sn=clamp(invLerp(SPD_LO,SPD_HI,glider.gndspeed),0,1);
   const fov=70+sn*16; camera.fov+=(fov-camera.fov)*Math.min(1,dt*4); camera.updateProjectionMatrix();
   document.getElementById('vign').style.opacity=Math.max(0,(sn-0.5))*0.8;
-}
-function updateWings(dt){
-  if (!wingL) return;
-  const target=clamp(glider.gload-1, -1.2, 4)*WING_BEND_PER_G;   // excess-G -> upward bow
-  bendSmooth += (target-bendSmooth)*(1-Math.exp(-dt*9));         // springy ease
-  wingL.rotation.z=-(WING_BASE_DIH+bendSmooth);
-  wingR.rotation.z= (WING_BASE_DIH+bendSmooth);
 }
 
 /* ===================== HUD — glass-cockpit instruments ===================== */
@@ -831,7 +828,7 @@ function loop(now){
   _rq.copy(prevQ).slerp(glider.q, alpha);
   if(!previewMode){ gliderGroup.position.copy(_rp); gliderGroup.quaternion.copy(_rq);
     updateCamera(frame||FIXED, _rp, _rq); }
-  updateWings(frame||FIXED);
+  updateFlex(frame||FIXED);
   sky.position.copy(camera.position);
   sun.position.copy(_rp).add(SUN_OFFSET); sun.target.position.copy(_rp); sun.target.updateMatrixWorld();
   sunDisc.position.copy(camera.position).addScaledVector(SUN_DIR,44000);
@@ -860,10 +857,11 @@ window.__swooper={
   tstr(x,z){ return +thermalStrength(x,z).toFixed(3); },
   windBase(x,z){ const v=windBaseAt(x,z,simTime,new THREE.Vector3()); return {x:+v.x.toFixed(1),z:+v.z.toFixed(1),mag:+Math.hypot(v.x,v.z).toFixed(1),ang:+(Math.atan2(v.x,-v.z)*DEG).toFixed(0)}; },
   cloudCount(){ let n=0; for(let i=0;i<cloudSize.array.length;i++) if(cloudSize.array[i]>0) n++; return n; },
-  setModel(i){ setModel(i); }, modelCount(){ return MODELS.length; },
-  preview(i,dist=16,az=0.7,el=0.34){ setModel(i); previewMode=true; gliderGroup.position.set(0,0,0); gliderGroup.quaternion.identity();
+  setFlex(i){ setFlexMode(i); }, flexCount(){ return FLEX_MODES.length; },
+  flexState(){ return {mode:flexMode, name:FLEX_MODES[flexMode], bend:+flex.bend.toFixed(4), asym:+flex.asym.toFixed(4), droop:+flex.droop.toFixed(4), yaw:+flex.yaw.toFixed(4),
+    segR:flex.segR.map(s=>+s.rotation.z.toFixed(3)), segL:flex.segL.map(s=>+s.rotation.z.toFixed(3)), boomX:+flex.boomRear.rotation.x.toFixed(3), boomY:+flex.boomRear.rotation.y.toFixed(3)}; },
+  preview(i,dist=16,az=0.7,el=0.34,g=null,pitch=null){ if(i!=null) setFlexMode(i); if(g!=null) glider.gload=g; if(pitch!=null) glider.qPitch=pitch; previewMode=true; gliderGroup.position.set(0,0,0); gliderGroup.quaternion.identity();
     camera.position.set(Math.sin(az)*Math.cos(el)*dist, Math.sin(el)*dist, Math.cos(az)*Math.cos(el)*dist); camera.lookAt(0,0.4,0); },
-  modelInfo(){ const m=MODELS[currentModelIdx]; let meshes=0,tris=0; craftHolder.traverse(o=>{ if(o.isMesh){ meshes++; const g=o.geometry; if(g&&g.index) tris+=g.index.count/3; else if(g&&g.attributes.position) tris+=g.attributes.position.count/3; } }); return {idx:currentModelIdx, name:m.name, meshes, tris:Math.round(tris)}; },
   varioGainNow(){ return varioGain?+varioGain.gain.value.toFixed(4):-1; },
   camUpWorldY(){ return +(new THREE.Vector3(0,1,0).applyQuaternion(camera.quaternion).y).toFixed(3); },
   camDist(){ return +camera.position.distanceTo(gliderGroup.position).toFixed(1); },
