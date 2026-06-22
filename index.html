@@ -81,7 +81,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.33';
+const VERSION = '0.40';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -194,22 +194,43 @@ function terrainHeight(x,z){
   return ridgedFbm(wx*TFF_BASE+5.0, wz*TFF_BASE+2.0)*PEAK_H - 1100;
 }
 // ---- wind field: orographic ridge lift + thermals -> you can SOAR ----
-const RIDGE_GAIN=0.6, RIDGE_H=2400, THERMAL_GAIN=48, THERMAL_H=8000, THFF=0.0003;
-function thermalAt(x,z,t){ const n=vnoise(x*THFF+3.1,z*THFF+1.7); const c=Math.max(0,n-0.34)/0.66; return c*c*(0.72+0.28*Math.sin(t*0.2+n*37)); }
+// NON-UNIFORM wind: a slow large-scale drift of direction & strength over km,
+// from low-freq noise around the mean WIND -> different breeze in each valley.
+const WIND_VAR_FF=0.000045, WIND_DIR_SWING=1.5, WIND_SPD_MIN=20, WIND_SPD_MAX=52;
+const _WBANG=Math.atan2(WIND.x,-WIND.z);
+function windBaseAt(x,z,t,out){
+  const a=vnoise(x*WIND_VAR_FF+10.0, z*WIND_VAR_FF+4.0);
+  const b=vnoise(x*WIND_VAR_FF*1.6-3.0, z*WIND_VAR_FF*1.6+8.0);
+  const h=_WBANG + (a-0.5)*WIND_DIR_SWING + 0.12*Math.sin(t*0.045);
+  const spd=WIND_SPD_MIN + (WIND_SPD_MAX-WIND_SPD_MIN)*b;
+  return out.set(Math.sin(h)*spd, 0, -Math.cos(h)*spd);
+}
+// thermals: static source strength 0..1 (smoothstep core -> wider & catchable)
+// + gentle time wobble. Drives lift, GROUND TINT and CLOUD placement alike.
+const RIDGE_GAIN=0.6, RIDGE_H=2400, THERMAL_GAIN=52, THERMAL_H=8000, THFF=0.0003, THERMAL_THRESH=0.30;
+function thermalStrength(x,z){ const n=vnoise(x*THFF+3.1,z*THFF+1.7); const c=clamp((n-THERMAL_THRESH)/(1-THERMAL_THRESH),0,1); return c*c*(3-2*c); }
+function thermalAt(x,z,t){ return thermalStrength(x,z)*(0.80+0.20*Math.sin(t*0.2 + x*0.0013 + z*0.0011)); }
+const _wbLift=new THREE.Vector3();
 function windLift(x,y,z,t){
   const ag=Math.max(0, y-terrainHeight(x,z)), d=45;
   const gx=(terrainHeight(x+d,z)-terrainHeight(x-d,z))/(2*d), gz=(terrainHeight(x,z+d)-terrainHeight(x,z-d))/(2*d);
-  const oro=RIDGE_GAIN*(WIND.x*gx+WIND.z*gz)*Math.exp(-ag/RIDGE_H);      // wind into a windward face -> updraft (lee -> sink)
-  const th =THERMAL_GAIN*thermalAt(x,z,t)*Math.exp(-ag/THERMAL_H);       // rising thermal columns
-  return clamp(oro+th, -26, 27);   // gentle enough to add lift, not spike AoA into a stall
+  windBaseAt(x,z,t,_wbLift);
+  const oro=RIDGE_GAIN*(_wbLift.x*gx+_wbLift.z*gz)*Math.exp(-ag/RIDGE_H);  // wind into a windward face -> updraft (lee -> sink)
+  const th =THERMAL_GAIN*thermalAt(x,z,t)*Math.exp(-ag/THERMAL_H);         // rising thermal columns
+  return clamp(oro+th, -26, 28);   // gentle enough to add lift, not spike AoA into a stall
 }
 
 const C_GREEN=[0.30,0.45,0.22], C_ROCK=[0.46,0.42,0.35], C_SNOW=[0.95,0.96,0.99];
-function setColor(col,o,h,ny){
+function setColor(col,o,h,ny,wx,wz){
   const snow=clamp((h-3100)/1400,0,1), green=clamp((1100-h)/1300,0,1), steep=clamp((0.80-ny)/0.42,0,1);
   let r=C_ROCK[0],g=C_ROCK[1],b=C_ROCK[2];                       // rock base
   const gf=green*(1-steep);  r+=(C_GREEN[0]-r)*gf; g+=(C_GREEN[1]-g)*gf; b+=(C_GREEN[2]-b)*gf;   // green low/gentle
   const sf=snow*(1-steep*0.55); r+=(C_SNOW[0]-r)*sf; g+=(C_SNOW[1]-g)*sf; b+=(C_SNOW[2]-b)*sf;   // snow high
+  // THERMAL TINT: sun-baked dark/warm patches mark the strong rising columns
+  // (those that grow a cumulus above) -> look down = dark patch, look up = cloud.
+  const th=thermalStrength(wx,wz);
+  if(th>0.22){ const k=clamp((th-0.22)*1.25,0,0.6)*(1-snow*0.9);
+    r+=(0.17-r)*k; g+=(0.105-g)*k; b+=(0.055-b)*k; }
   col[o]=r; col[o+1]=g; col[o+2]=b;
 }
 const terrainMat=new THREE.MeshLambertMaterial({vertexColors:true, flatShading:true});
@@ -248,7 +269,7 @@ function buildChunk(ch,cx,cz){
   ch.mesh.geometry.attributes.position.needsUpdate=true;
   ch.mesh.geometry.computeVertexNormals();
   const nrm=ch.mesh.geometry.attributes.normal.array;
-  for(let i=0;i<N*N;i++){ const o=i*3; setColor(col,o, pos[o+1], nrm[o+1]); }
+  for(let i=0;i<N*N;i++){ const o=i*3; setColor(col,o, pos[o+1], nrm[o+1], ox+pos[o], oz+pos[o+2]); }
   ch.mesh.geometry.attributes.color.needsUpdate=true;
   ch.cx=cx; ch.cz=cz;
 }
@@ -273,8 +294,10 @@ let airParticles;
   const mat=new THREE.PointsMaterial({ color:0xcfe2ee, size:3.0, sizeAttenuation:true, transparent:true, opacity:0.34, depthWrite:false, fog:false });
   airParticles=new THREE.Points(geo,mat); airParticles.frustumCulled=false; scene.add(airParticles);
 }
+const _wbPart=new THREE.Vector3();
 function updateAirParticles(dt){
-  const c=glider.pos, wx=WIND.x*dt, wz=WIND.z*dt;
+  const c=glider.pos; windBaseAt(c.x,c.z,simTime,_wbPart);
+  const wx=_wbPart.x*dt, wz=_wbPart.z*dt;
   for(let i=0;i<AIR_N;i++){
     const o=i*3;
     let x=airPos[o]+wx, y=airPos[o+1]+thermalAt(airPos[o],airPos[o+2],simTime)*28*dt, z=airPos[o+2]+wz;
@@ -284,6 +307,71 @@ function updateAirParticles(dt){
     airPos[o]=x; airPos[o+1]=y; airPos[o+2]=z;
   }
   airParticles.geometry.attributes.position.needsUpdate=true;
+}
+
+/* ===================== CLOUDS (cumulus over thermals + sparse ambiance) =====================
+   Instanced camera-facing billboards. Cumulus cluster on the TOP of every strong
+   thermal column -> a landmark you aim for to find lift (like real soaring). A few
+   sparse fair-weather puffs elsewhere for depth. Streamed in a cell grid round the craft. */
+const CLOUD_CELL=1700, CLOUD_R=6, CLOUD_PUFFS=5, CLOUD_BASE=3900, CLOUD_THRESH=0.42;
+const CLOUD_N=(2*CLOUD_R+1)*(2*CLOUD_R+1)*CLOUD_PUFFS;
+let cloudCX=null, cloudCZ=null;
+const cloudCenter=new THREE.InstancedBufferAttribute(new Float32Array(CLOUD_N*3),3);
+const cloudSize  =new THREE.InstancedBufferAttribute(new Float32Array(CLOUD_N),1);
+const cloudBright=new THREE.InstancedBufferAttribute(new Float32Array(CLOUD_N),1);
+{
+  const cv=document.createElement('canvas'); cv.width=cv.height=64; const g2=cv.getContext('2d');
+  const grd=g2.createRadialGradient(32,32,1,32,32,31);
+  grd.addColorStop(0,'rgba(255,255,255,1)'); grd.addColorStop(0.45,'rgba(255,255,255,0.72)'); grd.addColorStop(1,'rgba(255,255,255,0)');
+  g2.fillStyle=grd; g2.fillRect(0,0,64,64);
+  const tex=new THREE.CanvasTexture(cv);
+  const quad=new THREE.PlaneGeometry(1,1);
+  const cgeo=new THREE.InstancedBufferGeometry();
+  cgeo.setIndex(quad.index); cgeo.setAttribute('position',quad.attributes.position); cgeo.setAttribute('uv',quad.attributes.uv);
+  cgeo.setAttribute('aCenter',cloudCenter); cgeo.setAttribute('aSize',cloudSize); cgeo.setAttribute('aBright',cloudBright);
+  cgeo.instanceCount=CLOUD_N;
+  const cmat=new THREE.ShaderMaterial({
+    transparent:true, depthWrite:false,
+    uniforms:{ map:{value:tex}, sun:{value:new THREE.Color(0xfff4e0)}, shade:{value:new THREE.Color(0xb6bdca)} },
+    vertexShader:`attribute vec3 aCenter; attribute float aSize; attribute float aBright;
+      varying vec2 vUv; varying float vB;
+      void main(){ vUv=uv; vB=aBright;
+        vec4 mv=modelViewMatrix*vec4(aCenter,1.0);
+        mv.xy += position.xy*aSize;
+        gl_Position=projectionMatrix*mv; }`,
+    fragmentShader:`uniform sampler2D map; uniform vec3 sun; uniform vec3 shade; varying vec2 vUv; varying float vB;
+      void main(){ float a=texture2D(map,vUv).a; if(a<0.01) discard;
+        gl_FragColor=vec4(mix(shade,sun,clamp(vB,0.0,1.0)), a); }`
+  });
+  const cloudMesh=new THREE.Mesh(cgeo,cmat); cloudMesh.frustumCulled=false; cloudMesh.renderOrder=2; scene.add(cloudMesh);
+}
+function updateClouds(){
+  const ccx=Math.round(glider.pos.x/CLOUD_CELL), ccz=Math.round(glider.pos.z/CLOUD_CELL);
+  if(ccx===cloudCX&&ccz===cloudCZ) return;
+  cloudCX=ccx; cloudCZ=ccz;
+  const C=cloudCenter.array, S=cloudSize.array, B=cloudBright.array;
+  let p=0;
+  for(let dz=-CLOUD_R;dz<=CLOUD_R;dz++)for(let dx=-CLOUD_R;dx<=CLOUD_R;dx++){
+    const cx=ccx+dx, cz=ccz+dz, wx=cx*CLOUD_CELL, wz=cz*CLOUD_CELL;
+    const s=thermalStrength(wx,wz);
+    const ambient = s<=CLOUD_THRESH && hash2(cx*7+1, cz*13+5)>0.70;     // sparse fair-weather puffs
+    const base=Math.max(CLOUD_BASE, terrainHeight(wx,wz)+500);
+    for(let k=0;k<CLOUD_PUFFS;k++){
+      const o=p*3;
+      if(s>CLOUD_THRESH){                                               // cumulus marking a thermal
+        const h1=hash2(cx*131+k*17, cz*977+k*7), h2=hash2(cx*53+k*3, cz*191+k*29), h3=hash2(cx*311+k, cz*97+k*13);
+        const rad=70+360*s*Math.sqrt(h1), ang=h2*6.2831;
+        C[o]=wx+Math.cos(ang)*rad*1.25; C[o+1]=base+(h3-0.5)*170+k*66+s*230; C[o+2]=wz+Math.sin(ang)*rad;
+        S[p]=(360+560*s)*(0.55+0.7*h3); B[p]=0.5+0.5*h2;
+      } else if(ambient && k<2){                                        // wispy ambiance puff
+        const h1=hash2(cx*61+k*9, cz*43+k*11), h2=hash2(cx*23+k, cz*7+k*5);
+        C[o]=wx+(h1-0.5)*700; C[o+1]=base+520+(h2-0.5)*240; C[o+2]=wz+(h2-0.5)*700;
+        S[p]=300+220*h1; B[p]=0.82;
+      } else { S[p]=0; }
+      p++;
+    }
+  }
+  cloudCenter.needsUpdate=true; cloudSize.needsUpdate=true; cloudBright.needsUpdate=true;
 }
 
 /* ===================== GLIDER (mesh + state) ===================== */
@@ -328,7 +416,7 @@ addEventListener('keydown',e=>{ if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRigh
   keys[e.code]=true;
   if(e.code==='KeyR'){ if(state!=='menu') startFlight(); }
   else if(e.code==='KeyM'){ audioOn=!audioOn; }
-  else if(e.code==='Escape'){ if(state==='flying'){ state='paused'; pauseEl.classList.remove('hidden'); } }
+  else if(e.code==='Escape'){ if(state==='flying'){ state='paused'; pauseEl.classList.remove('hidden'); silenceAudio(); } }
   else if(e.code==='Space'){ if(state==='menu') startFlight(); else if(state==='paused') resumeFlight(); } });
 addEventListener('keyup',e=>{ keys[e.code]=false; });
 addEventListener('blur',()=>{ for(const k in keys) keys[k]=false; });
@@ -350,7 +438,7 @@ function startFlight(){
   glider.airspeed=INIT_SPEED; glider.gndspeed=INIT_SPEED; glider.alpha=0; glider.stall=0;
   rawH=rawV=horizontalInput=verticalInput=0;
   prevPos.copy(glider.pos); prevQ.copy(glider.q);
-  updateTerrain();
+  updateTerrain(); cloudCX=null; updateClouds();
   state='flying'; menuEl.classList.add('hidden'); pauseEl.classList.add('hidden');
 }
 
@@ -379,7 +467,8 @@ function readInput(){
 /* ===================== PHYSICS (own aerodynamics) ===================== */
 const _f=new THREE.Vector3(), _r=new THREE.Vector3(), _u=new THREE.Vector3(),
       _vair=new THREE.Vector3(), _ahat=new THREE.Vector3(), _lift=new THREE.Vector3(), _side=new THREE.Vector3(),
-      _wind=new THREE.Vector3(), _F=new THREE.Vector3(), _T=new THREE.Vector3(), _dq=new THREE.Quaternion(), _axis=new THREE.Vector3();
+      _wind=new THREE.Vector3(), _F=new THREE.Vector3(), _T=new THREE.Vector3(), _dq=new THREE.Quaternion(), _axis=new THREE.Vector3(),
+      _wbStep=new THREE.Vector3();
 let lastBeta=0;
 
 function fixedStep(){
@@ -395,10 +484,11 @@ function fixedStep(){
   const t=simTime;
   const sq=SQUALL_AMP*Math.pow(Math.max(0,Math.sin(t*0.32+0.5)),6);   // sharp gust front, peaks ~every 20s
   const sqA=t*0.23;
+  windBaseAt(glider.pos.x, glider.pos.z, t, _wbStep);                 // local drifting breeze (varies over km)
   _wind.set(
-    WIND.x + GUST_AMP*(Math.sin(t*0.37)+0.6*Math.sin(t*0.91+1.3)) + sq*Math.cos(sqA),
-             GUST_AMP*0.5*(Math.sin(t*0.61+0.8)+0.5*Math.sin(t*1.23+2.1)) + sq*0.45*Math.sin(t*0.8),
-    WIND.z + GUST_AMP*(Math.sin(t*0.43+2.1)+0.6*Math.sin(t*1.07+0.5)) + sq*Math.sin(sqA)
+    _wbStep.x + GUST_AMP*(Math.sin(t*0.37)+0.6*Math.sin(t*0.91+1.3)) + sq*Math.cos(sqA),
+                GUST_AMP*0.5*(Math.sin(t*0.61+0.8)+0.5*Math.sin(t*1.23+2.1)) + sq*0.45*Math.sin(t*0.8),
+    _wbStep.z + GUST_AMP*(Math.sin(t*0.43+2.1)+0.6*Math.sin(t*1.07+0.5)) + sq*Math.sin(sqA)
   );
   _wind.y += windLift(glider.pos.x, glider.pos.y, glider.pos.z, t);   // ridge lift + thermals (soaring)
   _vair.copy(glider.vel).sub(_wind);
@@ -586,18 +676,25 @@ E('polygon',{points:`${WC},${WCY-WR+3} ${WC-5},${WCY-WR+13} ${WC+5},${WCY-WR+13}
 E('circle',{cx:WC,cy:WCY,r:2.4,fill:C_INK,stroke:C_AMBER,'stroke-width':1},wsvg);   // hub
 E('rect',{x:WC-23,y:WSZ+9,width:46,height:17,rx:3,fill:C_INK,stroke:C_AMBER,'stroke-width':1},wsvg);
 const wVal=E('text',{x:WC,y:WSZ+21,'text-anchor':'middle','font-size':11.5,fill:C_AMBER,'font-weight':600,'font-family':MONO},wsvg);
-const WIND_ANG=Math.atan2(WIND.x,-WIND.z)*DEG; wVal.textContent=Math.round(WIND.length());
-function updWind(hdg){ wArrow.setAttribute('transform',`rotate(${(WIND_ANG-hdg).toFixed(1)} ${WC} ${WCY})`); }
-
-function updateHUD(){
-  const air=glider.airspeed, alt=glider.pos.y-spawnY, hdg=Math.atan2(_f.x,-_f.z)*DEG;
-  updHdg(hdg); updVtape(asi,air); updVtape(alti,alt); updVario(glider.vel.y*0.1); updWind(hdg);
-  stallW.classList.toggle('on', glider.stall>0.4);
-  updateAudio();
+wVal.textContent=Math.round(WIND.length());                  // initial (mean) before flight
+const _wbHud=new THREE.Vector3();
+function updWind(hdg){                                        // live LOCAL wind (direction + strength)
+  windBaseAt(glider.pos.x, glider.pos.z, simTime, _wbHud);
+  const wAng=Math.atan2(_wbHud.x,-_wbHud.z)*DEG, mag=Math.hypot(_wbHud.x,_wbHud.z);
+  wArrow.setAttribute('transform',`rotate(${(wAng-hdg).toFixed(1)} ${WC} ${WCY})`);
+  wVal.textContent=Math.round(mag);
 }
 
-/* ===================== AUDIO (procedural wind) ===================== */
+function updateHUD(dt){
+  const air=glider.airspeed, alt=glider.pos.y-spawnY, hdg=Math.atan2(_f.x,-_f.z)*DEG, vario=glider.vel.y*0.1;
+  updHdg(hdg); updVtape(asi,air); updVtape(alti,alt); updVario(vario); updWind(hdg);
+  stallW.classList.toggle('on', glider.stall>0.4);
+  updateAudio(); updateVarioSound(vario, dt||FIXED);
+}
+
+/* ===================== AUDIO (procedural wind + variometer beep) ===================== */
 let audioCtx=null, windGain=null, windFilt=null, audioOn=true;
+let varioOsc=null, varioGain=null, beepPhase=0;
 function initAudio(){
   try{
     if(audioCtx){ audioCtx.resume&&audioCtx.resume(); return; }
@@ -608,6 +705,10 @@ function initAudio(){
     windFilt=audioCtx.createBiquadFilter(); windFilt.type='lowpass'; windFilt.frequency.value=500; windFilt.Q.value=0.7;
     windGain=audioCtx.createGain(); windGain.gain.value=0;
     src.connect(windFilt); windFilt.connect(windGain); windGain.connect(audioCtx.destination); src.start();
+    // variometer tone: rising beeps when climbing, low growl in strong sink
+    varioOsc=audioCtx.createOscillator(); varioOsc.type='sine'; varioOsc.frequency.value=600;
+    varioGain=audioCtx.createGain(); varioGain.gain.value=0;
+    varioOsc.connect(varioGain); varioGain.connect(audioCtx.destination); varioOsc.start();
   }catch(e){}
 }
 function updateAudio(){
@@ -616,6 +717,24 @@ function updateAudio(){
   const sn=clamp((sp-50)/240,0,1), prox=clamp(1-agl/700,0,1), now=audioCtx.currentTime;
   windGain.gain.setTargetAtTime(audioOn?(0.03+0.17*sn*sn+0.07*prox):0, now, 0.12);
   windFilt.frequency.setTargetAtTime(320+sp*4.2+prox*700, now, 0.12);
+}
+function updateVarioSound(vario, dt){   // vario in m/s (vel.y*0.1)
+  if(!audioCtx||audioCtx.state!=='running'||!varioGain) return;
+  const now=audioCtx.currentTime;
+  if(!audioOn){ varioGain.gain.setTargetAtTime(0, now, 0.05); return; }
+  if(vario>0.15){                       // climbing -> beeps; faster & higher with stronger lift
+    const c=Math.min(vario,4);
+    varioOsc.frequency.setTargetAtTime(620+c*180, now, 0.02);
+    beepPhase += dt*(1.5+c*1.7);  if(beepPhase>=1) beepPhase-=1;
+    varioGain.gain.setTargetAtTime(beepPhase<0.5?0.05:0.0, now, 0.008);
+  } else if(vario<-1.4){                 // strong sink -> quiet low growl
+    varioOsc.frequency.setTargetAtTime(225, now, 0.06);
+    varioGain.gain.setTargetAtTime(0.022, now, 0.06); beepPhase=0;
+  } else { varioGain.gain.setTargetAtTime(0, now, 0.05); beepPhase=0; }
+}
+function silenceAudio(){    // on pause: fade everything out so nothing hangs while frozen
+  if(!audioCtx||!windGain) return; const now=audioCtx.currentTime;
+  windGain.gain.setTargetAtTime(0,now,0.05); if(varioGain) varioGain.gain.setTargetAtTime(0,now,0.05);
 }
 
 /* ===================== LOOP ===================== */
@@ -627,7 +746,7 @@ function loop(now){
   if (state==='flying'){
     acc+=frame; let guard=0;
     while(acc>=FIXED && guard++<8){ prevPos.copy(glider.pos); prevQ.copy(glider.q); fixedStep(); acc-=FIXED; }
-    updateHUD(); updateTerrain();
+    updateHUD(frame); updateTerrain(); updateClouds();
   }
   const alpha = state==='flying' ? clamp(acc/FIXED,0,1) : 1;
   _rp.lerpVectors(prevPos, glider.pos, alpha);
@@ -648,7 +767,7 @@ glider.pos.set(0, Math.max(terrainHeight(0,0)+1300, 2700), 0);
 { const m=new THREE.Matrix4().lookAt(ZERO,new THREE.Vector3(0,-0.10,-1).normalize(),WORLD_UP); glider.q.setFromRotationMatrix(m); }
 prevPos.copy(glider.pos); prevQ.copy(glider.q);
 _f.set(0,0,-1).applyQuaternion(glider.q);
-updateTerrain();
+updateTerrain(); updateClouds();
 camera.position.set(0, glider.pos.y+10, 36); camera.lookAt(0, glider.pos.y-6, -40);
 requestAnimationFrame(loop);
 
@@ -660,6 +779,10 @@ window.__swooper={
   th(x,z){ return +terrainHeight(x,z).toFixed(0); },
   liftAt(x,y,z){ return +windLift(x,y,z,simTime).toFixed(1); },
   craftLift(){ return +windLift(glider.pos.x,glider.pos.y,glider.pos.z,simTime).toFixed(1); },
+  tstr(x,z){ return +thermalStrength(x,z).toFixed(3); },
+  windBase(x,z){ const v=windBaseAt(x,z,simTime,new THREE.Vector3()); return {x:+v.x.toFixed(1),z:+v.z.toFixed(1),mag:+Math.hypot(v.x,v.z).toFixed(1),ang:+(Math.atan2(v.x,-v.z)*DEG).toFixed(0)}; },
+  cloudCount(){ let n=0; for(let i=0;i<cloudSize.array.length;i++) if(cloudSize.array[i]>0) n++; return n; },
+  varioGainNow(){ return varioGain?+varioGain.gain.value.toFixed(4):-1; },
   camUpWorldY(){ return +(new THREE.Vector3(0,1,0).applyQuaternion(camera.quaternion).y).toFixed(3); },
   camDist(){ return +camera.position.distanceTo(gliderGroup.position).toFixed(1); },
   sim(n,h=0,v=0,yaw=0){
