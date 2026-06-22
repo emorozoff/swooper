@@ -46,6 +46,8 @@
   .seedrow button{ font-size:13px; line-height:1; padding:5px 8px; border-radius:3px; cursor:pointer;
     border:1px solid rgba(232,176,75,.4); background:rgba(12,16,20,.5); color:#eae4d6; }
   .seedrow button:hover{ border-color:#e8b04b; }
+  .seedrow.subtle{ margin-top:30px; opacity:.32; transform:scale(.9); transition:opacity .15s; }
+  .seedrow.subtle:hover{ opacity:.85; }
   #pausechip{ position:fixed; top:46px; left:50%; transform:translateX(-50%); z-index:6; pointer-events:none;
     font-family:ui-monospace,monospace; font-size:13px; letter-spacing:2px; color:#eae4d6;
     background:rgba(12,16,20,.5); border:1px solid rgba(232,176,75,.4); border-radius:20px; padding:7px 18px; text-shadow:0 1px 4px rgba(0,0,0,.6); }
@@ -78,7 +80,7 @@
     <div class="title">swooper</div>
     <div class="ver" id="ver">v0.20</div>
     <button class="play" id="play">START</button>
-    <div class="seedrow">сид <input id="seedin" inputmode="numeric" spellcheck="false"><button id="seedgo" title="новый мир">⟳</button><button id="seedrnd" title="случайный мир">🎲</button></div>
+    <div class="seedrow subtle">сид <input id="seedin" inputmode="numeric" spellcheck="false"><button id="seedgo" title="новый мир">⟳</button><button id="seedrnd" title="случайный мир">🎲</button></div>
   </div>
 </div>
 
@@ -86,15 +88,14 @@
 
 <div class="overlay hidden" id="settings">
   <div>
-    <div class="title" style="font-size:38px;letter-spacing:5px;">МЕНЮ</div>
-    <div class="seedrow" style="margin-top:14px;">сид <input id="seedin2" inputmode="numeric" spellcheck="false"><button id="seedgo2" title="лететь в этом мире">лететь</button><button id="seedrnd2" title="случайный мир">🎲</button></div>
-    <label class="setrow"><input type="checkbox" id="set-invert"> инверсия тангажа</label>
-    <label class="setrow"><input type="checkbox" id="set-sound"> звук ветра</label>
+    <div class="title" style="font-size:46px;letter-spacing:8px;">swooper</div>
+    <label class="setrow" style="margin-top:20px;"><input type="checkbox" id="set-sound"> звук ветра</label>
     <div class="setbtns">
       <button class="play" id="set-resume">Продолжить</button>
       <button class="play ghost" id="set-restart">Рестарт</button>
     </div>
     <div class="sethint">Esc — продолжить · Space — пауза · R — рестарт</div>
+    <div class="seedrow subtle">сид <input id="seedin2" inputmode="numeric" spellcheck="false"><button id="seedgo2" title="лететь в этом мире">лететь</button><button id="seedrnd2" title="случайный мир">🎲</button></div>
   </div>
 </div>
 <div id="loaderr"></div>
@@ -110,7 +111,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.49';
+const VERSION = '0.50';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -164,6 +165,7 @@ const REF_V = 130, QD_REF = QA*REF_V*REF_V, Q_CAP = 2.2;
 const MAXW = 7.0, INIT_SPEED = 150, AXIS_RATE = 6.0;
 
 const SPD_LO = 90, SPD_HI = 250;     // camera/HUD speed normalization
+const ALT_OFFSET = 1500;             // world-Y -> realistic altimeter reading (valleys ~+400m, spawn ~4500m, peaks ~6600m)
 
 // wind: per-seed prevailing breeze (direction+strength set near windBaseAt) + buffeting gusts + sharp squalls
 const GUST_AMP = 9.0, SQUALL_AMP = 18.0, GUST_ROLL = 0.5;
@@ -634,7 +636,7 @@ function goSeed(v,auto){ location.href=location.pathname+'?seed='+((v>>>0)||0)+(
 function pauseFreeze(){ if(state!=='flying') return; state='paused'; pauseChip.classList.remove('hidden'); silenceAudio(); }
 function openSettings(){ if(state!=='flying'&&state!=='paused') return; state='settings';
   pauseChip.classList.add('hidden'); settingsEl.classList.remove('hidden'); silenceAudio();
-  document.getElementById('set-invert').checked=invert; document.getElementById('set-sound').checked=audioOn;
+  document.getElementById('set-sound').checked=audioOn;
   document.getElementById('seedin2').value=seed; }
 // start menu seed field (reload to that world)
 { const si=document.getElementById('seedin'); si.value=seed;
@@ -644,7 +646,6 @@ function openSettings(){ if(state!=='flying'&&state!=='paused') return; state='s
 // settings menu handlers
 document.getElementById('set-resume').onclick=resumeFlight;
 document.getElementById('set-restart').onclick=startFlight;
-document.getElementById('set-invert').onchange=e=>{ invert=e.target.checked; };
 document.getElementById('set-sound').onchange=e=>{ audioOn=e.target.checked; };
 { const s2=document.getElementById('seedin2');
   document.getElementById('seedgo2').onclick=()=>goSeed(parseInt(s2.value,10)||0,true);     // lift into a new world & fly
@@ -906,7 +907,7 @@ function updWind(hdg){                                        // live LOCAL wind
 }
 
 function updateHUD(dt){
-  const air=glider.airspeed, alt=glider.pos.y-spawnY, hdg=Math.atan2(_f.x,-_f.z)*DEG, vario=glider.vel.y*0.1;
+  const air=glider.airspeed, alt=glider.pos.y+ALT_OFFSET, hdg=Math.atan2(_f.x,-_f.z)*DEG, vario=glider.vel.y*0.1;
   updHdg(hdg); updVtape(asi,air); updVtape(alti,alt); updVario(vario); updWind(hdg);
   stallW.classList.toggle('on', glider.stall>0.4);
   updateAudio(); updateVarioSound(vario, dt||FIXED);
