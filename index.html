@@ -56,6 +56,14 @@
   .setrow{ font-family:ui-monospace,monospace; font-size:13px; letter-spacing:1px; color:#eae4d6; opacity:.9; margin-top:12px;
     display:flex; gap:8px; align-items:center; justify-content:flex-start; cursor:pointer; }
   .setrow input{ width:15px; height:15px; accent-color:#e8b04b; cursor:pointer; }
+  .setrange{ gap:10px; }
+  .setrange input[type=range]{ width:118px; accent-color:#e8b04b; cursor:pointer; }
+  .setrange .rngend{ opacity:.55; font-size:11px; }
+  .seg{ display:inline-flex; gap:4px; }
+  .seg button{ font:inherit; font-size:11px; letter-spacing:1px; padding:3px 9px; border-radius:3px; cursor:pointer;
+    color:#eae4d6; background:rgba(12,16,20,.5); border:1px solid rgba(232,176,75,.4); }
+  .seg button.on{ background:#e8b04b; color:#16100a; border-color:#e8b04b; }
+  .seg button:hover{ border-color:#e8b04b; }
   .setbtns{ display:flex; gap:12px; justify-content:center; margin-top:24px; }
   .play.ghost{ background:transparent; color:#e8b04b; }
   .sethint{ margin-top:16px; font-family:ui-monospace,monospace; font-size:11px; letter-spacing:1px; color:#eae4d6; opacity:.5; }
@@ -96,6 +104,8 @@
       <label class="setrow"><input type="checkbox" id="set-crash"> разбиваться о рельеф</label>
       <label class="setrow"><input type="checkbox" id="set-trails"> следы за крыльями</label>
       <label class="setrow"><input type="checkbox" id="set-fx"> свист у рельефа</label>
+      <div class="setrow setrange"><span>термики</span><input type="range" id="set-therm" min="0.3" max="1.8" step="0.05"><span class="rngend">сильнее</span></div>
+      <div class="setrow setseg"><span>графика</span><span class="seg" id="set-gfx"><button data-q="0">низк</button><button data-q="1">сред</button><button data-q="2">выс</button></span></div>
     </div>
     <div class="setbtns">
       <button class="play" id="set-resume">Продолжить</button>
@@ -130,7 +140,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.54';
+const VERSION = '0.55';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -194,6 +204,10 @@ const MPS = 0.27, ALT_BASE = 2500;
 const GUST_AMP = 9.0, SQUALL_AMP = 18.0, GUST_ROLL = 0.5;
 
 const clamp=(v,a,b)=> v<a?a:v>b?b:v;
+// persisted settings — one localStorage key each (prefix sw_). 🎲 only changes the seed, never these.
+function prefB(k,d){ try{ const v=localStorage.getItem('sw_'+k); return v===null?d:v==='1'; }catch(e){ return d; } }
+function prefN(k,d){ try{ const v=parseFloat(localStorage.getItem('sw_'+k)); return Number.isFinite(v)?v:d; }catch(e){ return d; } }
+function prefSet(k,v){ try{ localStorage.setItem('sw_'+k, v); }catch(e){} }
 const invLerp=(a,b,v)=> (v-a)/(b-a);
 const WORLD_UP=new THREE.Vector3(0,1,0), WORLD_DOWN=new THREE.Vector3(0,-1,0), ZERO=new THREE.Vector3();
 const DEG=180/Math.PI;
@@ -247,6 +261,17 @@ const sun=new THREE.DirectionalLight(PAL.sun,2.05); sun.castShadow=true;
 sun.shadow.mapSize.set(2048,2048); sun.shadow.bias=-0.0005; sun.shadow.normalBias=14;
 { const c=sun.shadow.camera; c.near=200; c.far=14000; c.left=-4200; c.right=4200; c.top=4200; c.bottom=-4200; c.updateProjectionMatrix(); }
 scene.add(sun); scene.add(sun.target);
+// GRAPHICS QUALITY (perf): 0 low / 1 med / 2 high — pixel ratio + shadows + shadow-map size. Live + persisted.
+const GFX=[ {pr:0.7, shadows:false, ss:1024}, {pr:1.0, shadows:true, ss:1024}, {pr:1.5, shadows:true, ss:2048} ];
+let gfxQ=(()=>{ const v=prefN('gfx',2); return (v===0||v===1||v===2)?v:2; })();
+function applyGraphics(q){
+  const g=GFX[q]||GFX[2];
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, g.pr)); renderer.setSize(innerWidth,innerHeight);
+  renderer.shadowMap.enabled=g.shadows; sun.castShadow=g.shadows;
+  if(g.shadows && sun.shadow.mapSize.width!==g.ss){ sun.shadow.mapSize.set(g.ss,g.ss); if(sun.shadow.map){ sun.shadow.map.dispose(); sun.shadow.map=null; } }
+  scene.traverse(o=>{ if(o.isMesh && o.material){ (Array.isArray(o.material)?o.material:[o.material]).forEach(m=>{ m.needsUpdate=true; }); } });
+}
+applyGraphics(gfxQ);
 const sunDisc=new THREE.Mesh(new THREE.SphereGeometry(1650,20,20), new THREE.MeshBasicMaterial({color:PAL.discCore,fog:false,toneMapped:false})); sunDisc.renderOrder=-1; scene.add(sunDisc);
 // A3 haze sky: 3-band gradient (ground/horizon/zenith) + warm in-scatter glow & tight halo toward the sun
 const skyMat=new THREE.ShaderMaterial({ side:THREE.BackSide, fog:false, depthWrite:false, depthTest:false,
@@ -306,7 +331,10 @@ function windBaseAt(x,z,t,out){
 // thermals: static source strength 0..1 (smoothstep core -> wider & catchable)
 // + gentle time wobble. Drives lift, GROUND TINT and CLOUD placement alike.
 const RIDGE_GAIN=0.6, RIDGE_H=2400, THERMAL_GAIN=52, THERMAL_H=8000, THFF=0.0002, THERMAL_THRESH=0.30;   // THFF lower -> bigger thermal zones
-function thermalStrength(x,z){ const n=vnoise(x*THFF+3.1,z*THFF+1.7); const c=clamp((n-THERMAL_THRESH)/(1-THERMAL_THRESH),0,1); return c*c*(3-2*c); }
+// thermals slider (weak<->strong): scales BOTH the lift (thermGain) and zone size/frequency (lower threshold = bigger, more zones)
+let thermalScale=clamp(prefN('therm',1),0.3,1.8);
+let thermThresh=clamp(THERMAL_THRESH-(thermalScale-1)*0.18, 0.08, 0.55), thermGain=THERMAL_GAIN*thermalScale;
+function thermalStrength(x,z){ const n=vnoise(x*THFF+3.1,z*THFF+1.7); const c=clamp((n-thermThresh)/(1-thermThresh),0,1); return c*c*(3-2*c); }
 function thermalAt(x,z,t){ return thermalStrength(x,z)*(0.80+0.20*Math.sin(t*0.2 + x*0.0013 + z*0.0011)); }
 const _wbLift=new THREE.Vector3();
 function windLift(x,y,z,t){
@@ -314,7 +342,7 @@ function windLift(x,y,z,t){
   const gx=(terrainHeight(x+d,z)-terrainHeight(x-d,z))/(2*d), gz=(terrainHeight(x,z+d)-terrainHeight(x,z-d))/(2*d);
   windBaseAt(x,z,t,_wbLift);
   const oro=RIDGE_GAIN*(_wbLift.x*gx+_wbLift.z*gz)*Math.exp(-ag/RIDGE_H);  // wind into a windward face -> updraft (lee -> sink)
-  const th =THERMAL_GAIN*thermalAt(x,z,t)*Math.exp(-ag/THERMAL_H);         // rising thermal columns
+  const th =thermGain*thermalAt(x,z,t)*Math.exp(-ag/THERMAL_H);            // rising thermal columns (slider-scaled)
   return clamp(oro+th, -26, 28);   // gentle enough to add lift, not spike AoA into a stall
 }
 // B5 TERRAIN-STEERED WIND: venturi speed-up over windward faces/cols, lee stall, slope deflection,
@@ -381,7 +409,7 @@ const chunks=[];
     geo.setAttribute('position',new THREE.BufferAttribute(verts,3));
     geo.setAttribute('color',new THREE.BufferAttribute(cols,3));
     geo.setIndex(idx);
-    const mesh=new THREE.Mesh(geo,terrainMat); mesh.frustumCulled=false; mesh.castShadow=true; mesh.receiveShadow=true;
+    const mesh=new THREE.Mesh(geo,terrainMat); mesh.frustumCulled=true; mesh.castShadow=true; mesh.receiveShadow=true;   // cull off-screen chunks (main pass); shadow pass uses the light frustum independently
     scene.add(mesh); chunks.push({mesh,cx:null,cz:null});
   }
 }
@@ -392,6 +420,7 @@ function buildChunk(ch,cx,cz){
   ch.mesh.position.set(ox,0,oz);
   ch.mesh.geometry.attributes.position.needsUpdate=true;
   ch.mesh.geometry.computeVertexNormals();
+  ch.mesh.geometry.computeBoundingSphere();      // real bounds (displaced verts) so frustum culling is correct
   const nrm=ch.mesh.geometry.attributes.normal.array;
   for(let i=0;i<N*N;i++){ const o=i*3; setColor(col,o, pos[o+1], nrm[o+1], ox+pos[o], oz+pos[o+2]); }
   ch.mesh.geometry.attributes.color.needsUpdate=true;
@@ -405,6 +434,13 @@ function updateTerrain(){
     const ch=chunks[ix*GRID+iz];
     if(ch.cx!==cx||ch.cz!==cz) buildChunk(ch,cx,cz);
   }
+}
+// thermals slider: rescale lift + zone size, then force chunks (re-tint) & clouds to rebuild
+function setThermals(scale){
+  thermalScale=clamp(scale,0.3,1.8);
+  thermThresh=clamp(THERMAL_THRESH-(thermalScale-1)*0.18, 0.08, 0.55); thermGain=THERMAL_GAIN*thermalScale;
+  prefSet('therm', thermalScale);
+  for(const ch of chunks){ ch.cx=null; ch.cz=null; } cloudCX=null;     // rebuild on next updateTerrain/updateClouds
 }
 
 /* ===================== WIND PARTICLES (parcels of air) ===================== */
@@ -599,7 +635,7 @@ function updateBrakeFX(dt){
 /* ===================== WINGTIP VORTEX TRAILS (C3 — ribbon from the tips, toggle) =====================
    Camera-facing ribbon from each wingtip. Profile along the trail: thin & faint where it leaves the
    tip, widening & strengthening downstream, then fading at the far tail. Attaches to the bowing tip. */
-let trailsOn=true;
+let trailsOn=prefB('trails',true);
 const TRAIL_N=46, HALF_SPAN=CLASSIC.span/2;
 const trW=new Float32Array(TRAIL_N), trA=new Float32Array(TRAIL_N);   // static width/alpha vs position
 for(let i=0;i<TRAIL_N;i++){ const u=(TRAIL_N-1-i)/(TRAIL_N-1);        // u: 0 at tip (newest) -> 1 at oldest
@@ -617,7 +653,7 @@ function makeTrail(){
     uniforms:{ uColor:{value:new THREE.Color(0xe6eef5)}, uOpacity:{value:0} },
     vertexShader:`attribute float aAlpha; varying float vA; void main(){ vA=aAlpha; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
     fragmentShader:`uniform vec3 uColor; uniform float uOpacity; varying float vA; void main(){ float a=vA*uOpacity; if(a<0.004) discard; gl_FragColor=vec4(uColor,a); }`});
-  const mesh=new THREE.Mesh(geo,mat); mesh.frustumCulled=false; mesh.renderOrder=1; scene.add(mesh);
+  const mesh=new THREE.Mesh(geo,mat); mesh.frustumCulled=false; mesh.renderOrder=3; scene.add(mesh);   // above clouds (renderOrder 2) so trails stay visible
   return {cpos,vpos,geo,mat,mesh};
 }
 const trailR=makeTrail(), trailL=makeTrail();
@@ -651,7 +687,7 @@ function updateTrails(rp,rq){
 }
 
 /* ===================== NEAR-MISS FX (C1) + TERRAIN CRASH (G2) ===================== */
-let nearMiss=0, fxOn=true, crashOn=true;
+let nearMiss=0, fxOn=prefB('fx',true), crashOn=prefB('crash',true);
 let camOrbitAz=0, camOrbitEl=0, dragging=false, camIdle=0, _pmx=0, _pmy=0;
 const crashEl=document.getElementById('crash');
 function clearanceNow(){                          // min terrain clearance under/around/ahead -> near-miss thrill
@@ -694,9 +730,10 @@ document.getElementById('play').onclick=startFlight;
 document.getElementById('ver').textContent='v'+VERSION;
 document.getElementById('tag').textContent='swooper v'+VERSION;
 function goSeed(v,auto){ location.href=location.pathname+'?seed='+((v>>>0)||0)+(auto?'&go=1':''); }
-function randomSeed(auto){ try{ localStorage.removeItem('swooper_mute'); }catch(e){} goSeed(Math.floor(Math.random()*1e9), auto); }   // 🎲: fresh world + sound back on
-function setAudioOn(v){ audioOn=v; try{ localStorage.setItem('swooper_mute', v?'0':'1'); }catch(e){} const c=document.getElementById('set-sound'); if(c)c.checked=v; }
-function setVarioOn(v){ varioOn=v; try{ localStorage.setItem('swooper_vario', v?'0':'1'); }catch(e){} const c=document.getElementById('set-vario'); if(c)c.checked=v; }
+function randomSeed(auto){ goSeed(Math.floor(Math.random()*1e9), auto); }   // 🎲: ONLY the seed changes — all settings persist
+function setAudioOn(v){ audioOn=v; prefSet('sound', v?'1':'0'); const c=document.getElementById('set-sound'); if(c)c.checked=v; }
+function setVarioOn(v){ varioOn=v; prefSet('vario', v?'1':'0'); const c=document.getElementById('set-vario'); if(c)c.checked=v; }
+function setGfx(q){ gfxQ=q; prefSet('gfx', q); applyGraphics(q); const seg=document.getElementById('set-gfx'); if(seg) Array.from(seg.children).forEach(btn=>btn.classList.toggle('on', +btn.dataset.q===q)); }
 // Space: freeze-frame pause (mute, no overlay so you can study the view).  Esc: settings menu.
 function pauseFreeze(){ if(state!=='flying') return; state='paused'; pauseChip.classList.remove('hidden'); silenceAudio(); }
 function openSettings(){ if(state!=='flying'&&state!=='paused') return; state='settings'; dragging=false;
@@ -706,6 +743,8 @@ function openSettings(){ if(state!=='flying'&&state!=='paused') return; state='s
   document.getElementById('set-crash').checked=crashOn;
   document.getElementById('set-trails').checked=trailsOn;
   document.getElementById('set-fx').checked=fxOn;
+  document.getElementById('set-therm').value=thermalScale;
+  { const seg=document.getElementById('set-gfx'); Array.from(seg.children).forEach(btn=>btn.classList.toggle('on', +btn.dataset.q===gfxQ)); }
   document.getElementById('seedin2').value=seed; }
 // start menu seed field (reload to that world)
 { const si=document.getElementById('seedin'); si.value=seed;
@@ -717,9 +756,11 @@ document.getElementById('set-resume').onclick=resumeFlight;
 document.getElementById('set-restart').onclick=startFlight;
 document.getElementById('set-sound').onchange=e=>{ setAudioOn(e.target.checked); };
 document.getElementById('set-vario').onchange=e=>{ setVarioOn(e.target.checked); };
-document.getElementById('set-crash').onchange=e=>{ crashOn=e.target.checked; };
-document.getElementById('set-trails').onchange=e=>{ trailsOn=e.target.checked; };
-document.getElementById('set-fx').onchange=e=>{ fxOn=e.target.checked; };
+document.getElementById('set-crash').onchange=e=>{ crashOn=e.target.checked; prefSet('crash', crashOn?'1':'0'); };
+document.getElementById('set-trails').onchange=e=>{ trailsOn=e.target.checked; prefSet('trails', trailsOn?'1':'0'); };
+document.getElementById('set-fx').onchange=e=>{ fxOn=e.target.checked; prefSet('fx', fxOn?'1':'0'); };
+document.getElementById('set-therm').oninput=e=>{ setThermals(parseFloat(e.target.value)); };
+document.getElementById('set-gfx').querySelectorAll('button').forEach(btn=>{ btn.onclick=()=>setGfx(+btn.dataset.q); });
 { const s2=document.getElementById('seedin2');
   document.getElementById('seedrnd2').onclick=()=>randomSeed(true);
   s2.addEventListener('keydown',e=>{ if(e.code==='Enter') goSeed(parseInt(s2.value,10)||0,true); }); }
@@ -1012,8 +1053,8 @@ function updateHUD(dt){
 }
 
 /* ===================== AUDIO (procedural wind + variometer beep) ===================== */
-let audioCtx=null, windGain=null, windFilt=null, audioOn=(()=>{ try{ return localStorage.getItem('swooper_mute')!=='1'; }catch(e){ return true; } })();
-let varioOn=(()=>{ try{ return localStorage.getItem('swooper_vario')!=='1'; }catch(e){ return true; } })();
+let audioCtx=null, windGain=null, windFilt=null, audioOn=prefB('sound',true);
+let varioOn=prefB('vario',true);
 let varioOsc=null, varioGain=null, beepPhase=0;
 function initAudio(){
   try{
@@ -1121,6 +1162,11 @@ window.__swooper={
   findThermal(){ for(let R=1700;R<16000;R+=1700)for(let a=0;a<16;a++){ const x=Math.round(Math.cos(a/16*6.28)*R/1700)*1700, z=Math.round(Math.sin(a/16*6.28)*R/1700)*1700, s=thermalStrength(x,z), g=terrainHeight(x,z); if(s>0.5&&g<2000) return {x,z,s:+s.toFixed(2),g:Math.round(g)}; } return null; },
   brakeNow(){ return +brake.toFixed(3); },
   hud(){ return { speedMS:+(glider.airspeed*MPS).toFixed(1), altM:+(glider.pos.y*MPS+ALT_BASE).toFixed(1), varioMS:+(glider.vel.y*MPS).toFixed(2) }; },
+  gfxState(){ return { q:gfxQ, pr:+renderer.getPixelRatio().toFixed(2), shadows:renderer.shadowMap.enabled }; },
+  setGfx(q){ setGfx(q); },
+  thermState(){ return { scale:+thermalScale.toFixed(2), thresh:+thermThresh.toFixed(3), gain:+thermGain.toFixed(1) }; },
+  setTherm(s){ setThermals(s); },
+  renderInfo(){ const r=renderer.info.render; return { calls:r.calls, triangles:r.triangles }; },
   spoilerDeg(){ return +(flex.spoilerR.rotation.x*DEG).toFixed(1); },
   nearMissNow(){ return +nearMiss.toFixed(3); },
   clearance(){ return +clearanceNow().toFixed(0); },
