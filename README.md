@@ -9,7 +9,8 @@ Inspired by *Superflight*, but a clean-room original: our own code, our own flig
 ## Controls (keyboard)
 - **↓ / S** — nose up · **↑ / W** — nose down
 - **← / →** (or **A / D**) — roll / turn · **Q / E** — yaw (rudder)
-- **M** — mute/unmute sound · **R** — restart · **Esc** — pause · **Space** — resume
+- **Space** — freeze-frame pause (time + sound stop, study the view) · **Esc** — menu (seed / settings / restart)
+- **M** — mute sound · **R** — restart
 
 ## Finding lift (soaring)
 Dark patches on the ground and **cumulus clouds** mark strong thermals. Fly toward them, listen for the **variometer beep** (faster/higher = climbing), then circle to stay in the rising column.

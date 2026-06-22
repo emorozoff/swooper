@@ -46,6 +46,16 @@
   .seedrow button{ font-size:13px; line-height:1; padding:5px 8px; border-radius:3px; cursor:pointer;
     border:1px solid rgba(232,176,75,.4); background:rgba(12,16,20,.5); color:#eae4d6; }
   .seedrow button:hover{ border-color:#e8b04b; }
+  #pausechip{ position:fixed; top:46px; left:50%; transform:translateX(-50%); z-index:6; pointer-events:none;
+    font-family:ui-monospace,monospace; font-size:13px; letter-spacing:2px; color:#eae4d6;
+    background:rgba(12,16,20,.5); border:1px solid rgba(232,176,75,.4); border-radius:20px; padding:7px 18px; text-shadow:0 1px 4px rgba(0,0,0,.6); }
+  #pausechip.hidden{ display:none; }
+  .setrow{ font-family:ui-monospace,monospace; font-size:13px; letter-spacing:1px; color:#eae4d6; opacity:.9; margin-top:12px;
+    display:flex; gap:8px; align-items:center; justify-content:center; cursor:pointer; }
+  .setrow input{ width:15px; height:15px; accent-color:#e8b04b; cursor:pointer; }
+  .setbtns{ display:flex; gap:12px; justify-content:center; margin-top:24px; }
+  .play.ghost{ background:transparent; color:#e8b04b; }
+  .sethint{ margin-top:16px; font-family:ui-monospace,monospace; font-size:11px; letter-spacing:1px; color:#eae4d6; opacity:.5; }
   #loaderr{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; text-align:center; padding:30px; z-index:50; }
 </style>
 </head>
@@ -72,10 +82,19 @@
   </div>
 </div>
 
-<div class="overlay hidden" id="pause">
+<div id="pausechip" class="hidden">⏸ ПАУЗА · Space — продолжить</div>
+
+<div class="overlay hidden" id="settings">
   <div>
-    <div class="title" style="font-size:42px;letter-spacing:5px;">ПАУЗА</div>
-    <button class="play" id="resume" style="margin-top:12px;">Продолжить (Space)</button>
+    <div class="title" style="font-size:38px;letter-spacing:5px;">МЕНЮ</div>
+    <div class="seedrow" style="margin-top:14px;">сид <input id="seedin2" inputmode="numeric" spellcheck="false"><button id="seedgo2" title="лететь в этом мире">лететь</button><button id="seedrnd2" title="случайный мир">🎲</button></div>
+    <label class="setrow"><input type="checkbox" id="set-invert"> инверсия тангажа</label>
+    <label class="setrow"><input type="checkbox" id="set-sound"> звук ветра</label>
+    <div class="setbtns">
+      <button class="play" id="set-resume">Продолжить</button>
+      <button class="play ghost" id="set-restart">Рестарт</button>
+    </div>
+    <div class="sethint">Esc — продолжить · Space — пауза · R — рестарт</div>
   </div>
 </div>
 <div id="loaderr"></div>
@@ -91,7 +110,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.46';
+const VERSION = '0.47';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -284,11 +303,12 @@ function setColor(col,o,h,ny,wx,wz){
     r+=(0.17-r)*k; g+=(0.105-g)*k; b+=(0.055-b)*k; }
   col[o]=r; col[o+1]=g; col[o+2]=b;
 }
+let rimUniforms=null;
 const terrainMat=new THREE.MeshLambertMaterial({vertexColors:true, flatShading:true});
 // worldspace grid overlay -> the ground is easy to read (proximity / speed / relief)
 const GRID_SIZE=120;
 terrainMat.onBeforeCompile=(sh)=>{
-  sh.uniforms.uRimColor={value:PAL.rimColor}; sh.uniforms.uRimStrength={value:0.50}; sh.uniforms.uRimPower={value:2.5}; sh.uniforms.uSunDir={value:SUN_DIR};
+  sh.uniforms.uRimColor={value:PAL.rimColor}; sh.uniforms.uRimStrength={value:0.50}; sh.uniforms.uRimPower={value:2.5}; sh.uniforms.uSunDir={value:SUN_DIR}; rimUniforms=sh.uniforms;
   sh.vertexShader='varying vec3 vWP; varying vec3 vWN;\n'+sh.vertexShader
     .replace('#include <begin_vertex>', '#include <begin_vertex>\n vWP=(modelMatrix*vec4(transformed,1.0)).xyz;')
     .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\n vWN=mat3(modelMatrix)*objectNormal;');
@@ -524,20 +544,35 @@ addEventListener('keydown',e=>{ if(e.target&&e.target.tagName==='INPUT') return;
   keys[e.code]=true;
   if(e.code==='KeyR'){ if(state!=='menu') startFlight(); }
   else if(e.code==='KeyM'){ audioOn=!audioOn; }
-  else if(e.code==='Escape'){ if(state==='flying'){ state='paused'; pauseEl.classList.remove('hidden'); silenceAudio(); } }
-  else if(e.code==='Space'){ if(state==='menu') startFlight(); else if(state==='paused') resumeFlight(); } });
+  else if(e.code==='Escape'){ if(state==='flying'||state==='paused') openSettings(); else if(state==='settings') resumeFlight(); }
+  else if(e.code==='Space'){ if(state==='menu') startFlight(); else if(state==='flying') pauseFreeze(); else resumeFlight(); } });   // Space: freeze-pause toggle
 addEventListener('keyup',e=>{ keys[e.code]=false; });
 addEventListener('blur',()=>{ for(const k in keys) keys[k]=false; });
-const menuEl=document.getElementById('menu'), pauseEl=document.getElementById('pause');
+const menuEl=document.getElementById('menu'), pauseChip=document.getElementById('pausechip'), settingsEl=document.getElementById('settings');
 document.getElementById('play').onclick=startFlight;
-document.getElementById('resume').onclick=resumeFlight;
 document.getElementById('ver').textContent='v'+VERSION;
 document.getElementById('tag').textContent='swooper v'+VERSION;
+function goSeed(v,auto){ location.href=location.pathname+'?seed='+((v>>>0)||0)+(auto?'&go=1':''); }
+// Space: freeze-frame pause (mute, no overlay so you can study the view).  Esc: settings menu.
+function pauseFreeze(){ if(state!=='flying') return; state='paused'; pauseChip.classList.remove('hidden'); silenceAudio(); }
+function openSettings(){ if(state!=='flying'&&state!=='paused') return; state='settings';
+  pauseChip.classList.add('hidden'); settingsEl.classList.remove('hidden'); silenceAudio();
+  document.getElementById('set-invert').checked=invert; document.getElementById('set-sound').checked=audioOn;
+  document.getElementById('seedin2').value=seed; }
+// start menu seed field (reload to that world)
 { const si=document.getElementById('seedin'); si.value=seed;
-  const go=v=>{ location.href=location.pathname+'?seed='+((v>>>0)||0); };
-  document.getElementById('seedgo').onclick=()=>go(parseInt(si.value,10)||0);
-  document.getElementById('seedrnd').onclick=()=>go(Math.floor(Math.random()*1e9));
-  si.addEventListener('keydown',e=>{ if(e.code==='Enter') go(parseInt(si.value,10)||0); }); }
+  document.getElementById('seedgo').onclick=()=>goSeed(parseInt(si.value,10)||0,false);
+  document.getElementById('seedrnd').onclick=()=>goSeed(Math.floor(Math.random()*1e9),false);
+  si.addEventListener('keydown',e=>{ if(e.code==='Enter') goSeed(parseInt(si.value,10)||0,false); }); }
+// settings menu handlers
+document.getElementById('set-resume').onclick=resumeFlight;
+document.getElementById('set-restart').onclick=startFlight;
+document.getElementById('set-invert').onchange=e=>{ invert=e.target.checked; };
+document.getElementById('set-sound').onchange=e=>{ audioOn=e.target.checked; };
+{ const s2=document.getElementById('seedin2');
+  document.getElementById('seedgo2').onclick=()=>goSeed(parseInt(s2.value,10)||0,true);     // lift into a new world & fly
+  document.getElementById('seedrnd2').onclick=()=>goSeed(Math.floor(Math.random()*1e9),true);
+  s2.addEventListener('keydown',e=>{ if(e.code==='Enter') goSeed(parseInt(s2.value,10)||0,true); }); }
 
 function startFlight(){
   initAudio();
@@ -553,14 +588,14 @@ function startFlight(){
   prevPos.copy(glider.pos); prevQ.copy(glider.q);
   updateTerrain(); cloudCX=null; updateClouds();
   previewMode=false;
-  state='flying'; menuEl.classList.add('hidden'); pauseEl.classList.add('hidden');
+  state='flying'; menuEl.classList.add('hidden'); pauseChip.classList.add('hidden'); settingsEl.classList.add('hidden');
 }
 
-function resumeFlight(){   // un-pause: keep flying from where we left off (no teleport/reset)
-  if(state!=='paused') return;
+function resumeFlight(){   // leave pause/settings, keep flying from where we left off (no teleport/reset)
+  if(state!=='paused' && state!=='settings') return;
   initAudio();
-  last=performance.now(); acc=0;   // avoid one huge catch-up step after the pause
-  state='flying'; pauseEl.classList.add('hidden');
+  last=performance.now(); acc=0;   // avoid one huge catch-up step after the freeze
+  state='flying'; pauseChip.classList.add('hidden'); settingsEl.classList.add('hidden');
 }
 
 function readInput(){
@@ -882,6 +917,7 @@ _f.set(0,0,-1).applyQuaternion(glider.q);
 updateTerrain(); updateClouds();
 camera.position.set(0, glider.pos.y+10, 36); camera.lookAt(0, glider.pos.y-6, -40);
 requestAnimationFrame(loop);
+if(new URLSearchParams(location.search).get('go')==='1') startFlight();   // ?seed=N&go=1 -> skip menu, fly straight in
 
 /* ===================== headless hooks ===================== */
 window.__swooper={
@@ -900,6 +936,7 @@ window.__swooper={
   varioGainNow(){ return varioGain?+varioGain.gain.value.toFixed(4):-1; },
   palette(){ return {seed, blueHour:PAL.blueHour, sun:'#'+PAL.sun.getHexString(), horizon:'#'+PAL.horizon.getHexString(), skyTop:'#'+PAL.skyTop.getHexString(), fog:'#'+PAL.fog.getHexString(), green:PAL.green.map(x=>+x.toFixed(2)), snow:PAL.snow.map(x=>+x.toFixed(2))}; },
   snowOpacity(){ return +snowMat.opacity.toFixed(3); },
+  setRim(s){ if(rimUniforms) rimUniforms.uRimStrength.value=s; },
   sunView(y=7000){ previewMode=true; gliderGroup.position.set(0,-99999,0); camera.position.set(0,y,0); camera.lookAt(new THREE.Vector3(0,y,0).add(SUN_DIR.clone().multiplyScalar(1000))); },
   camUpWorldY(){ return +(new THREE.Vector3(0,1,0).applyQuaternion(camera.quaternion).y).toFixed(3); },
   camDist(){ return +camera.position.distanceTo(gliderGroup.position).toFixed(1); },
