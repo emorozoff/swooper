@@ -52,8 +52,9 @@
     font-family:ui-monospace,monospace; font-size:13px; letter-spacing:2px; color:#eae4d6;
     background:rgba(12,16,20,.5); border:1px solid rgba(232,176,75,.4); border-radius:20px; padding:7px 18px; text-shadow:0 1px 4px rgba(0,0,0,.6); }
   #pausechip.hidden{ display:none; }
+  .setlist{ margin-top:20px; display:inline-flex; flex-direction:column; gap:0; text-align:left; }
   .setrow{ font-family:ui-monospace,monospace; font-size:13px; letter-spacing:1px; color:#eae4d6; opacity:.9; margin-top:12px;
-    display:flex; gap:8px; align-items:center; justify-content:center; cursor:pointer; }
+    display:flex; gap:8px; align-items:center; justify-content:flex-start; cursor:pointer; }
   .setrow input{ width:15px; height:15px; accent-color:#e8b04b; cursor:pointer; }
   .setbtns{ display:flex; gap:12px; justify-content:center; margin-top:24px; }
   .play.ghost{ background:transparent; color:#e8b04b; }
@@ -84,18 +85,35 @@
   </div>
 </div>
 
-<div id="pausechip" class="hidden">⏸ ПАУЗА · Space — продолжить</div>
+<div id="pausechip" class="hidden">⏸ ПАУЗА · P — продолжить</div>
 
 <div class="overlay hidden" id="settings">
   <div>
-    <div class="title" style="font-size:46px;letter-spacing:8px;">swooper</div>
-    <label class="setrow" style="margin-top:20px;"><input type="checkbox" id="set-sound"> звук ветра</label>
+    <div class="title" style="font-size:40px;letter-spacing:7px;">настройки</div>
+    <div class="setlist">
+      <label class="setrow"><input type="checkbox" id="set-sound"> звук ветра</label>
+      <label class="setrow"><input type="checkbox" id="set-crash"> разбиваться о рельеф</label>
+      <label class="setrow"><input type="checkbox" id="set-trails"> следы за крыльями</label>
+      <label class="setrow"><input type="checkbox" id="set-fx"> эффекты пролёта</label>
+    </div>
     <div class="setbtns">
       <button class="play" id="set-resume">Продолжить</button>
       <button class="play ghost" id="set-restart">Рестарт</button>
     </div>
-    <div class="sethint">Esc — продолжить · Space — пауза · R — рестарт</div>
-    <div class="seedrow subtle">сид <input id="seedin2" inputmode="numeric" spellcheck="false"><button id="seedgo2" title="лететь в этом мире">лететь</button><button id="seedrnd2" title="случайный мир">🎲</button></div>
+    <div class="sethint">Esc — продолжить · P — пауза · Space — тормоза · R — рестарт</div>
+    <div class="seedrow subtle">сид <input id="seedin2" inputmode="numeric" spellcheck="false"><button id="seedrnd2" title="случайный мир">🎲</button></div>
+  </div>
+</div>
+
+<div class="overlay hidden" id="crash">
+  <div>
+    <div class="title" style="font-size:44px;letter-spacing:6px;color:#ff6a52;">разбился</div>
+    <div class="ver" id="crashsub">столкновение с рельефом</div>
+    <div class="setbtns">
+      <button class="play" id="crash-restart">Заново</button>
+      <button class="play ghost" id="crash-rnd">🎲 новый мир</button>
+    </div>
+    <div class="sethint">R — заново</div>
   </div>
 </div>
 <div id="loaderr"></div>
@@ -111,7 +129,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.50';
+const VERSION = '0.51';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -282,7 +300,7 @@ function windBaseAt(x,z,t,out){
 }
 // thermals: static source strength 0..1 (smoothstep core -> wider & catchable)
 // + gentle time wobble. Drives lift, GROUND TINT and CLOUD placement alike.
-const RIDGE_GAIN=0.6, RIDGE_H=2400, THERMAL_GAIN=52, THERMAL_H=8000, THFF=0.0003, THERMAL_THRESH=0.30;
+const RIDGE_GAIN=0.6, RIDGE_H=2400, THERMAL_GAIN=52, THERMAL_H=8000, THFF=0.0002, THERMAL_THRESH=0.30;   // THFF lower -> bigger thermal zones
 function thermalStrength(x,z){ const n=vnoise(x*THFF+3.1,z*THFF+1.7); const c=clamp((n-THERMAL_THRESH)/(1-THERMAL_THRESH),0,1); return c*c*(3-2*c); }
 function thermalAt(x,z,t){ return thermalStrength(x,z)*(0.80+0.20*Math.sin(t*0.2 + x*0.0013 + z*0.0011)); }
 const _wbLift=new THREE.Vector3();
@@ -324,8 +342,8 @@ function setColor(col,o,h,ny,wx,wz){
   // THERMAL TINT: sun-baked dark/warm patches mark the strong rising columns
   // (those that grow a cumulus above) -> look down = dark patch, look up = cloud.
   const th=thermalStrength(wx,wz);
-  if(th>0.22){ const k=clamp((th-0.22)*1.25,0,0.6)*(1-snow*0.9);
-    r+=(0.17-r)*k; g+=(0.105-g)*k; b+=(0.055-b)*k; }
+  if(th>0.15){ const k=clamp((th-0.15)*1.55,0,0.74)*(1-snow*0.9);   // bigger footprint + darker, more readable patches
+    r+=(0.13-r)*k; g+=(0.078-g)*k; b+=(0.045-b)*k; }
   col[o]=r; col[o+1]=g; col[o+2]=b;
 }
 let rimUniforms=null;
@@ -410,31 +428,6 @@ function updateAirParticles(dt){
   airParticles.geometry.attributes.position.needsUpdate=true;
 }
 
-/* ===================== SNOW (A7 — high-altitude flurries near the peaks) ===================== */
-const SNOW_N=900, SNOW_BOX=900, snowPos=new Float32Array(SNOW_N*3); let snowPoints, snowMat;
-{ const rng=mulberry32(7);
-  for(let i=0;i<SNOW_N;i++){ snowPos[i*3]=(rng()-0.5)*SNOW_BOX; snowPos[i*3+1]=(rng()-0.5)*SNOW_BOX; snowPos[i*3+2]=(rng()-0.5)*SNOW_BOX; }
-  const geo=new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(snowPos,3));
-  snowMat=new THREE.PointsMaterial({ color:0xfff4ec, size:2.3, sizeAttenuation:true, transparent:true, opacity:0, depthWrite:false, fog:true });
-  snowPoints=new THREE.Points(geo,snowMat); snowPoints.frustumCulled=false; scene.add(snowPoints);
-}
-const _snW=new THREE.Vector3();
-function updateSnow(dt){
-  const c=glider.pos, dens=clamp((c.y-2800)/1400,0,1);     // fades in with altitude (near peaks)
-  snowMat.opacity=0.5*dens*dens;
-  if(dens<=0.002) return;
-  windBaseAt(c.x,c.z,simTime,_snW);
-  const wx=_snW.x*0.35*dt, wz=_snW.z*0.35*dt, fall=70*dt;
-  for(let i=0;i<SNOW_N;i++){ const o=i*3;
-    let x=snowPos[o]+wx, y=snowPos[o+1]-fall, z=snowPos[o+2]+wz;
-    let rx=x-c.x; rx-=SNOW_BOX*Math.round(rx/SNOW_BOX); x=c.x+rx;
-    let ry=y-c.y; ry-=SNOW_BOX*Math.round(ry/SNOW_BOX); y=c.y+ry;
-    let rz=z-c.z; rz-=SNOW_BOX*Math.round(rz/SNOW_BOX); z=c.z+rz;
-    snowPos[o]=x; snowPos[o+1]=y; snowPos[o+2]=z;
-  }
-  snowPoints.geometry.attributes.position.needsUpdate=true;
-}
-
 /* ===================== CLOUDS (cumulus over thermals + sparse ambiance) =====================
    Instanced camera-facing billboards. Cumulus cluster on the TOP of every strong
    thermal column -> a landmark you aim for to find lift (like real soaring). A few
@@ -500,60 +493,6 @@ function updateClouds(){
   cloudCenter.needsUpdate=true; cloudSize.needsUpdate=true; cloudBright.needsUpdate=true;
 }
 
-/* ===================== B3 VISIBLE THERMAL MARKERS — rising dust-devil columns in strong thermals ===================== */
-const TH_CELL=1700, TH_R=4, TH_PUFFS=10, TH_RISE=240, TH_SWIRL=0.55, TH_TWIST=5.0, TH_RADIUS=170, TH_BASE_SIZE=190, TH_OPACITY=0.22;
-const THERM_N=(2*TH_R+1)*(2*TH_R+1)*TH_PUFFS;
-let thermX=null, thermZ=null;
-const thAnchor=new THREE.InstancedBufferAttribute(new Float32Array(THERM_N*3),3);
-const thFrac=new THREE.InstancedBufferAttribute(new Float32Array(THERM_N),1);
-const thStr=new THREE.InstancedBufferAttribute(new Float32Array(THERM_N),1);
-const thPhase=new THREE.InstancedBufferAttribute(new Float32Array(THERM_N),1);
-const thPuff=new THREE.InstancedBufferAttribute(new Float32Array(THERM_N),1);
-let thermMat;
-{ const cv=document.createElement('canvas'); cv.width=cv.height=64; const g2=cv.getContext('2d');
-  const grd=g2.createRadialGradient(32,32,1,32,32,31); grd.addColorStop(0,'rgba(255,255,255,0.85)'); grd.addColorStop(0.5,'rgba(255,255,255,0.40)'); grd.addColorStop(1,'rgba(255,255,255,0)');
-  g2.fillStyle=grd; g2.fillRect(0,0,64,64); const tex=new THREE.CanvasTexture(cv);
-  const quad=new THREE.PlaneGeometry(1,1), tgeo=new THREE.InstancedBufferGeometry();
-  tgeo.setIndex(quad.index); tgeo.setAttribute('position',quad.attributes.position); tgeo.setAttribute('uv',quad.attributes.uv);
-  tgeo.setAttribute('aAnchor',thAnchor); tgeo.setAttribute('aFrac',thFrac); tgeo.setAttribute('aStr',thStr); tgeo.setAttribute('aPhase',thPhase); tgeo.setAttribute('aPuff',thPuff);
-  tgeo.instanceCount=THERM_N;
-  thermMat=new THREE.ShaderMaterial({ transparent:true, depthWrite:false,
-    uniforms:{ map:{value:tex}, uTime:{value:0}, uSun:{value:PAL.sunGlow.clone()}, uBase:{value:PAL.skyGround.clone()},
-      uOpacity:{value:TH_OPACITY}, uFogColor:{value:PAL.fog.clone()}, uFogDensity:{value:0.000068},
-      uRise:{value:TH_RISE}, uSwirl:{value:TH_SWIRL}, uTwist:{value:TH_TWIST}, uRadius:{value:TH_RADIUS}, uSize:{value:TH_BASE_SIZE} },
-    vertexShader:`attribute vec3 aAnchor; attribute float aFrac,aStr,aPhase,aPuff; uniform float uTime,uRise,uSwirl,uTwist,uRadius,uSize;
-      varying vec2 vUv; varying float vFade,vFr,vFog;
-      void main(){ vUv=uv;
-        float colTop=min(aAnchor.y+1300.0, 2400.0); float colH=colTop-aAnchor.y;     // cap top <=2400 -> always BELOW the craft
-        if(aStr<0.001 || colH<150.0){ gl_Position=vec4(2.0,2.0,2.0,1.0); return; }
-        float fr=fract(aFrac + uTime*uRise/colH + aPhase); vFr=fr;
-        float th=aPhase*6.2831 + uTime*uSwirl*(1.0+0.6*aStr) + fr*uTwist;
-        float taper=mix(1.0,0.35,fr); float r=uRadius*aStr*taper*(0.6+0.4*sin(th*0.5));
-        vec3 center=vec3(aAnchor.x+cos(th)*r, aAnchor.y+40.0+fr*colH, aAnchor.z+sin(th)*r);
-        vFade=smoothstep(0.0,0.12,fr)*(1.0-smoothstep(0.78,1.0,fr));
-        float sz=uSize*(0.5+0.5*aStr)*taper*(0.7+0.6*aPuff);
-        vec4 mv=modelViewMatrix*vec4(center,1.0); vFog=-mv.z; mv.xy+=position.xy*sz; gl_Position=projectionMatrix*mv; }`,
-    fragmentShader:`uniform sampler2D map; uniform vec3 uSun,uBase,uFogColor; uniform float uOpacity,uFogDensity; varying vec2 vUv; varying float vFade,vFr,vFog;
-      void main(){ float a=texture2D(map,vUv).a*vFade*uOpacity; if(a<0.004) discard;
-        vec3 col=mix(uBase,uSun, clamp(vFr*0.6+0.4,0.0,1.0));
-        float f=1.0-exp(-vFog*vFog*uFogDensity*uFogDensity); col=mix(col,uFogColor,clamp(f,0.0,1.0));
-        gl_FragColor=vec4(col,a); }`});
-  const thermMesh=new THREE.Mesh(tgeo,thermMat); thermMesh.frustumCulled=false; thermMesh.renderOrder=2; scene.add(thermMesh);
-}
-function updateThermals(){
-  const tcx=Math.round(glider.pos.x/TH_CELL), tcz=Math.round(glider.pos.z/TH_CELL);
-  if(tcx===thermX&&tcz===thermZ) return; thermX=tcx; thermZ=tcz;
-  const A=thAnchor.array, F=thFrac.array, S=thStr.array, P=thPhase.array, U=thPuff.array; let p=0;
-  for(let dz=-TH_R;dz<=TH_R;dz++)for(let dx=-TH_R;dx<=TH_R;dx++){
-    const cx=tcx+dx, cz=tcz+dz, wx=cx*TH_CELL, wz=cz*TH_CELL, s=thermalStrength(wx,wz);
-    if(s>CLOUD_THRESH){
-      const ax=wx+(hash2(cx*71+3,cz*17+9)-0.5)*TH_CELL*0.5, az=wz+(hash2(cx*29+5,cz*53+1)-0.5)*TH_CELL*0.5, gy=terrainHeight(ax,az);
-      for(let k=0;k<TH_PUFFS;k++){ const o=p*3; A[o]=ax; A[o+1]=gy; A[o+2]=az; F[p]=k/(TH_PUFFS-1); S[p]=s; P[p]=hash2(cx*131+k*17,cz*977+k*7); U[p]=hash2(cx*53+k*3,cz*191+k*29); p++; }
-    } else { for(let k=0;k<TH_PUFFS;k++){ S[p]=0; p++; } }
-  }
-  thAnchor.needsUpdate=true; thFrac.needsUpdate=true; thStr.needsUpdate=true; thPhase.needsUpdate=true; thPuff.needsUpdate=true;
-}
-
 /* ===================== GLIDER (mesh + state) ===================== */
 const glider={ pos:new THREE.Vector3(), q:new THREE.Quaternion(), vel:new THREE.Vector3(), angVel:new THREE.Vector3(),
                airspeed:0, gndspeed:0, alpha:0, stall:0, gload:1 };
@@ -589,10 +528,15 @@ function buildFlexGlider(){
     grp.add(new THREE.Mesh(new THREE.BoxGeometry(iL,th,root).translate(sign*iL/2,0,0), cWing));
     grp.add(new THREE.Mesh(new THREE.BoxGeometry(oL,th*0.85,(root+tip)/2).translate(sign*(iL+oL/2),0,(root-tip)*0.2), cWing));
     grp.add(new THREE.Mesh(new THREE.BoxGeometry(half,th*1.05,0.18).translate(sign*half/2,0,-root/2+0.1), cAcc));
+    // airbrake spoiler plate: lies flush on the wing top, hinges up at its leading edge under Space
+    const sp=new THREE.Mesh(new THREE.BoxGeometry(half*0.5,0.05,0.5), cAcc);
+    sp.geometry.translate(0,0.025,0.25);                                  // hinge at front edge -> plate lies aft & up
+    const piv=new THREE.Group(); piv.position.set(sign*half*0.40, th*0.55, -0.05); piv.add(sp);
+    grp.add(piv);
     grp.position.set(sign*0.45,p.wingY,p.wingZ);
-    return grp;
+    return {grp,piv};
   }
-  flex.wingR=wing(1); flex.wingL=wing(-1); g.add(flex.wingR); g.add(flex.wingL);
+  { const R=wing(1), L=wing(-1); flex.wingR=R.grp; flex.wingL=L.grp; flex.spoilerR=R.piv; flex.spoilerL=L.piv; g.add(R.grp); g.add(L.grp); }
   flex.dih=p.dih; flex.bend=0; flex.bendV=0; flex.ready=true;
   g.traverse(o=>{ if(o.isMesh) o.castShadow=true; });
   return g;
@@ -612,7 +556,77 @@ function updateFlex(dt){
   const a=flex.dih+flex.bend;
   flex.wingR.rotation.z= a;     // right tip up
   flex.wingL.rotation.z=-a;     // left tip up
+  if(flex.spoilerR){ const sd=-brake*1.15; flex.spoilerR.rotation.x=sd; flex.spoilerL.rotation.x=sd; }   // airbrakes pop up with Space
 }
+
+/* ===================== AIRBRAKES (B2) — Space held = drag + lift dump ===================== */
+let brake=0;                                   // 0..1 smoothed spoiler deployment (held Space)
+const CD_BRAKE=0.17, BRAKE_LIFT_DUMP=0.5;
+// disturbed-air puff aft of the wings while braking (local to the craft, no text)
+const BRK_N=90, brkPos=new Float32Array(BRK_N*3); let brkPoints, brkMat;
+{ const rng=mulberry32(303);
+  for(let i=0;i<BRK_N;i++){ brkPos[i*3]=(rng()-0.5)*16; brkPos[i*3+1]=0.4+(rng()-0.5)*0.8; brkPos[i*3+2]=0.5+rng()*6; }
+  const geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.BufferAttribute(brkPos,3));
+  brkMat=new THREE.PointsMaterial({ color:0xeaf2f7, size:0.5, sizeAttenuation:true, transparent:true, opacity:0, depthWrite:false, fog:false });
+  brkPoints=new THREE.Points(geo,brkMat); brkPoints.frustumCulled=false; gliderGroup.add(brkPoints);
+}
+function updateBrakeFX(){
+  brkMat.opacity=0.5*brake;
+  if(brake<0.02) return;
+  for(let i=0;i<BRK_N;i++){ const o=i*3;
+    brkPos[o]   += (Math.random()-0.5)*1.4;
+    brkPos[o+1] += (Math.random()-0.5)*1.1 + 0.25;
+    brkPos[o+2] += 2.4 + Math.random()*2.2;
+    if(brkPos[o+2]>10 || Math.random()<0.05){ brkPos[o]=(Math.random()-0.5)*16; brkPos[o+1]=0.5+(Math.random()-0.5)*0.7; brkPos[o+2]=0.4+Math.random()*1.6; }
+  }
+  brkPoints.geometry.attributes.position.needsUpdate=true;
+}
+
+/* ===================== WINGTIP VORTEX TRAILS (C3 — show under load, toggle) ===================== */
+let trailsOn=true;
+const TRAIL_N=64;
+const TIP_OFF_R=new THREE.Vector3(CLASSIC.span/2+0.45, CLASSIC.wingY+0.2, CLASSIC.wingZ);
+const TIP_OFF_L=new THREE.Vector3(-(CLASSIC.span/2+0.45), CLASSIC.wingY+0.2, CLASSIC.wingZ);
+function makeTrail(){
+  const pos=new Float32Array(TRAIL_N*3), age=new Float32Array(TRAIL_N);
+  for(let i=0;i<TRAIL_N;i++) age[i]=1-i/(TRAIL_N-1);            // i=0 oldest (faded) -> last newest (opaque)
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  geo.setAttribute('aAge',new THREE.BufferAttribute(age,1));
+  const mat=new THREE.ShaderMaterial({ transparent:true, depthWrite:false,
+    uniforms:{ uColor:{value:new THREE.Color(0xdfeaf2)}, uOpacity:{value:0} },
+    vertexShader:`attribute float aAge; varying float vA; void main(){ vA=aAge; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+    fragmentShader:`uniform vec3 uColor; uniform float uOpacity; varying float vA; void main(){ gl_FragColor=vec4(uColor,(1.0-vA)*uOpacity); }`});
+  const line=new THREE.Line(geo,mat); line.frustumCulled=false; line.renderOrder=1; scene.add(line);
+  return {pos,geo,mat,line};
+}
+const trailR=makeTrail(), trailL=makeTrail();
+const _tip=new THREE.Vector3();
+function seedTrail(tr,off,rp,rq){ _tip.copy(off).applyQuaternion(rq).add(rp);
+  for(let i=0;i<TRAIL_N;i++){ tr.pos[i*3]=_tip.x; tr.pos[i*3+1]=_tip.y; tr.pos[i*3+2]=_tip.z; } tr.geo.attributes.position.needsUpdate=true; }
+function updateTrails(rp,rq){
+  const op = trailsOn ? clamp((Math.abs(glider.gload)-1.25)*0.55,0,0.75) : 0;   // vortices appear under G (turns/pulls)
+  trailR.mat.uniforms.uOpacity.value=op; trailL.mat.uniforms.uOpacity.value=op;
+  for(const [tr,off] of [[trailR,TIP_OFF_R],[trailL,TIP_OFF_L]]){
+    _tip.copy(off).applyQuaternion(rq).add(rp);
+    tr.pos.copyWithin(0,3); const n=tr.pos.length; tr.pos[n-3]=_tip.x; tr.pos[n-2]=_tip.y; tr.pos[n-1]=_tip.z;
+    tr.geo.attributes.position.needsUpdate=true;
+  }
+}
+
+/* ===================== NEAR-MISS FX (C1) + TERRAIN CRASH (G2) ===================== */
+let nearMiss=0, fxOn=true, crashOn=true;
+let camOrbitAz=0, camOrbitEl=0, dragging=false, camIdle=0, _pmx=0, _pmy=0;
+const crashEl=document.getElementById('crash');
+function clearanceNow(){                          // min terrain clearance under/around/ahead -> near-miss thrill
+  const p=glider.pos; let m=p.y-terrainHeight(p.x,p.z);
+  for(let i=0;i<6;i++){ const a=i*1.0472; m=Math.min(m, p.y-terrainHeight(p.x+Math.cos(a)*45, p.z+Math.sin(a)*45)); }
+  m=Math.min(m, (p.y+_f.y*70)-terrainHeight(p.x+_f.x*70, p.z+_f.z*70));
+  return m;
+}
+function crash(){ if(state!=='flying') return; state='crashed'; silenceAudio();
+  document.getElementById('vign').style.opacity=0; nearMiss=0;
+  crashEl.classList.remove('hidden'); }
 
 /* ===================== INPUT (keyboard) ===================== */
 const keys={}; let sens=1, invert=false, state='menu', simTime=0, spawnY=0;
@@ -622,35 +636,52 @@ addEventListener('keydown',e=>{ if(e.target&&e.target.tagName==='INPUT') return;
   if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code))e.preventDefault();
   keys[e.code]=true;
   if(e.code==='KeyR'){ if(state!=='menu') startFlight(); }
-  else if(e.code==='KeyM'){ audioOn=!audioOn; }
+  else if(e.code==='KeyM'){ setAudioOn(!audioOn); }
   else if(e.code==='Escape'){ if(state==='flying'||state==='paused') openSettings(); else if(state==='settings') resumeFlight(); }
-  else if(e.code==='Space'){ if(state==='menu') startFlight(); else if(state==='flying') pauseFreeze(); else resumeFlight(); } });   // Space: freeze-pause toggle
+  else if(e.code==='KeyP'){ if(state==='flying') pauseFreeze(); else if(state==='paused') resumeFlight(); }   // P: freeze-pause toggle
+  else if(e.code==='Space'){ if(state==='menu'||state==='crashed') startFlight(); } });                       // Space held = airbrakes in flight
 addEventListener('keyup',e=>{ keys[e.code]=false; });
-addEventListener('blur',()=>{ for(const k in keys) keys[k]=false; });
+addEventListener('blur',()=>{ for(const k in keys) keys[k]=false; dragging=false; });
+// C4 mouse-orbit camera: drag to look around, eases back to chase after idle
+renderer.domElement.addEventListener('pointerdown',e=>{ if(state==='flying'||state==='paused'){ dragging=true; _pmx=e.clientX; _pmy=e.clientY; } });
+addEventListener('pointerup',()=>{ dragging=false; });
+addEventListener('pointermove',e=>{ if(!dragging) return;
+  camOrbitAz=clamp(camOrbitAz-(e.clientX-_pmx)*0.006,-2.6,2.6); camOrbitEl=clamp(camOrbitEl+(e.clientY-_pmy)*0.005,-0.9,1.15);
+  _pmx=e.clientX; _pmy=e.clientY; camIdle=0; });
 const menuEl=document.getElementById('menu'), pauseChip=document.getElementById('pausechip'), settingsEl=document.getElementById('settings');
 document.getElementById('play').onclick=startFlight;
 document.getElementById('ver').textContent='v'+VERSION;
 document.getElementById('tag').textContent='swooper v'+VERSION;
 function goSeed(v,auto){ location.href=location.pathname+'?seed='+((v>>>0)||0)+(auto?'&go=1':''); }
+function randomSeed(auto){ try{ localStorage.removeItem('swooper_mute'); }catch(e){} goSeed(Math.floor(Math.random()*1e9), auto); }   // 🎲: fresh world + sound back on
+function setAudioOn(v){ audioOn=v; try{ localStorage.setItem('swooper_mute', v?'0':'1'); }catch(e){} const c=document.getElementById('set-sound'); if(c)c.checked=v; }
 // Space: freeze-frame pause (mute, no overlay so you can study the view).  Esc: settings menu.
 function pauseFreeze(){ if(state!=='flying') return; state='paused'; pauseChip.classList.remove('hidden'); silenceAudio(); }
 function openSettings(){ if(state!=='flying'&&state!=='paused') return; state='settings';
   pauseChip.classList.add('hidden'); settingsEl.classList.remove('hidden'); silenceAudio();
   document.getElementById('set-sound').checked=audioOn;
+  document.getElementById('set-crash').checked=crashOn;
+  document.getElementById('set-trails').checked=trailsOn;
+  document.getElementById('set-fx').checked=fxOn;
   document.getElementById('seedin2').value=seed; }
 // start menu seed field (reload to that world)
 { const si=document.getElementById('seedin'); si.value=seed;
   document.getElementById('seedgo').onclick=()=>goSeed(parseInt(si.value,10)||0,false);
-  document.getElementById('seedrnd').onclick=()=>goSeed(Math.floor(Math.random()*1e9),false);
+  document.getElementById('seedrnd').onclick=()=>randomSeed(false);
   si.addEventListener('keydown',e=>{ if(e.code==='Enter') goSeed(parseInt(si.value,10)||0,false); }); }
 // settings menu handlers
 document.getElementById('set-resume').onclick=resumeFlight;
 document.getElementById('set-restart').onclick=startFlight;
-document.getElementById('set-sound').onchange=e=>{ audioOn=e.target.checked; };
+document.getElementById('set-sound').onchange=e=>{ setAudioOn(e.target.checked); };
+document.getElementById('set-crash').onchange=e=>{ crashOn=e.target.checked; };
+document.getElementById('set-trails').onchange=e=>{ trailsOn=e.target.checked; };
+document.getElementById('set-fx').onchange=e=>{ fxOn=e.target.checked; };
 { const s2=document.getElementById('seedin2');
-  document.getElementById('seedgo2').onclick=()=>goSeed(parseInt(s2.value,10)||0,true);     // lift into a new world & fly
-  document.getElementById('seedrnd2').onclick=()=>goSeed(Math.floor(Math.random()*1e9),true);
+  document.getElementById('seedrnd2').onclick=()=>randomSeed(true);
   s2.addEventListener('keydown',e=>{ if(e.code==='Enter') goSeed(parseInt(s2.value,10)||0,true); }); }
+// crash overlay handlers
+document.getElementById('crash-restart').onclick=startFlight;
+document.getElementById('crash-rnd').onclick=()=>randomSeed(true);
 
 function startFlight(){
   initAudio();
@@ -664,9 +695,11 @@ function startFlight(){
   glider.airspeed=INIT_SPEED; glider.gndspeed=INIT_SPEED; glider.alpha=0; glider.stall=0;
   rawH=rawV=horizontalInput=verticalInput=0;
   prevPos.copy(glider.pos); prevQ.copy(glider.q);
-  updateTerrain(); cloudCX=null; updateClouds(); thermX=null; updateThermals();
+  updateTerrain(); cloudCX=null; updateClouds();
+  brake=0; nearMiss=0; camOrbitAz=0; camOrbitEl=0; camIdle=0; dragging=false;
+  seedTrail(trailR,TIP_OFF_R,glider.pos,glider.q); seedTrail(trailL,TIP_OFF_L,glider.pos,glider.q);
   previewMode=false;
-  state='flying'; menuEl.classList.add('hidden'); pauseChip.classList.add('hidden'); settingsEl.classList.add('hidden');
+  state='flying'; menuEl.classList.add('hidden'); pauseChip.classList.add('hidden'); settingsEl.classList.add('hidden'); crashEl.classList.add('hidden');
 }
 
 function resumeFlight(){   // leave pause/settings, keep flying from where we left off (no teleport/reset)
@@ -702,6 +735,8 @@ function fixedStep(){
   readInput();
   simTime+=FIXED;
   const hIn=clamp(horizontalInput,-1,1), vIn=clamp(verticalInput,-1,1), yIn=clamp(yawInput,-1,1);
+  const bt=(inputOverride? (inputOverride.brake?1:0) : (keys.Space?1:0));
+  brake += (bt-brake)*0.14;                              // airbrake deploys/retracts over ~0.15s
 
   _f.set(0,0,-1).applyQuaternion(glider.q);
   _r.set(1,0,0).applyQuaternion(glider.q);
@@ -734,8 +769,8 @@ function fixedStep(){
     const aa=Math.abs(alpha);
     const clAtt=CL_SLOPE*alpha, clFp=CL_FP*Math.sin(2*alpha);
     w=1/(1+Math.exp(-(aa-ALPHA_STALL)/ALPHA_BLEND));    // 0 attached -> 1 stalled
-    const cl=(1-w)*clAtt + w*clFp;
-    const cd=CD0 + CD_IND*cl*cl + w*CD_STALL*Math.sin(aa)*Math.sin(aa);
+    const cl=((1-w)*clAtt + w*clFp)*(1-BRAKE_LIFT_DUMP*brake);                            // spoilers dump lift
+    const cd=CD0 + CD_IND*cl*cl + w*CD_STALL*Math.sin(aa)*Math.sin(aa) + CD_BRAKE*brake;  // + spoiler drag
     const qd=QA*V*V;
     glider.gload=(qd*cl)/(MASS*G);                       // wing load factor (drives flex)
 
@@ -777,15 +812,20 @@ function fixedStep(){
   if (wl>MAXW){ glider.angVel.multiplyScalar(MAXW/wl); wl=MAXW; }
   if (wl>1e-6){ _dq.setFromAxisAngle(_axis.copy(glider.angVel).multiplyScalar(1/wl), wl*FIXED); glider.q.premultiply(_dq); glider.q.normalize(); }
 
-  // terrain collision disabled for now — glider passes through (impacts return later)
+  // terrain collision (G2): crash on contact. Skipped in headless sim (inputOverride set) and when toggled off.
+  if(crashOn && !inputOverride && glider.pos.y <= terrainHeight(glider.pos.x,glider.pos.z)+1.5) crash();
 }
 
 /* ===================== CAMERA (chase, never inverts) ===================== */
 const _camGoal=new THREE.Vector3(), _look=new THREE.Vector3(), _cUp=new THREE.Vector3(), _cu2=new THREE.Vector3(),
-      _cf=new THREE.Vector3(), _lr=new THREE.Vector3(), _lu=new THREE.Vector3(), _cp=new THREE.Vector3(), _ml=new THREE.Matrix4(), _cq=new THREE.Quaternion(), _ctmp=new THREE.Vector3();
+      _cf=new THREE.Vector3(), _lr=new THREE.Vector3(), _lu=new THREE.Vector3(), _cp=new THREE.Vector3(), _ml=new THREE.Matrix4(), _cq=new THREE.Quaternion(), _ctmp=new THREE.Vector3(),
+      _off=new THREE.Vector3(), _oax=new THREE.Vector3();
 const LOOK_AHEAD=42, ROLL_TILT=0.20;     // camera tilts ≤~14° with bank, fades to 0 inverted (smooth thru rolls)
 let camDistSmooth=60;                     // speed-based camera distance, eased over time
 function updateCamera(dt, rpos, rq){
+  // mouse-orbit idle auto-return: hold the look for ~1.2s after the last drag, then ease back to chase
+  if(dragging) camIdle=0; else { camIdle+=dt; if(camIdle>1.2){ const k=1-Math.exp(-dt*1.8);
+    camOrbitAz-=camOrbitAz*k; camOrbitEl-=camOrbitEl*k; if(Math.abs(camOrbitAz)<1e-3)camOrbitAz=0; if(Math.abs(camOrbitEl)<1e-3)camOrbitEl=0; } }
   _cf.set(0,0,-1).applyQuaternion(rq);
   _cu2.set(0,1,0).applyQuaternion(rq);
   // level (no-roll) up in the plane of forward
@@ -800,18 +840,23 @@ function updateCamera(dt, rpos, rq){
   // speed -> camera distance (100->60, 300->100), eased
   const targetDist=clamp(30+(glider.gndspeed-100)*0.07, 36, 44);   // closer (min 36 so slow flight isn't too tight)
   camDistSmooth += (targetDist-camDistSmooth)*(1-Math.exp(-dt*1.5));
-  _camGoal.copy(rpos).addScaledVector(_cf,-camDistSmooth*0.95).addScaledVector(WORLD_UP,camDistSmooth*0.30);
+  // base chase offset, then optional mouse-orbit yaw/pitch around the craft
+  _off.copy(_cf).multiplyScalar(-camDistSmooth*0.95).addScaledVector(WORLD_UP,camDistSmooth*0.30);
+  if(camOrbitAz!==0||camOrbitEl!==0){ _off.applyAxisAngle(WORLD_UP,camOrbitAz);
+    _oax.crossVectors(_off,WORLD_UP); if(_oax.lengthSq()>1e-6){ _oax.normalize(); _off.applyAxisAngle(_oax,camOrbitEl); } }
+  _camGoal.copy(rpos).add(_off);
   camera.position.lerp(_camGoal, 1-Math.exp(-dt*1.6));         // smooth chase
   _ctmp.copy(camera.position).sub(rpos); const cd=_ctmp.length();   // leash to eased distance (kills lag blowout)
   if (cd>camDistSmooth) camera.position.copy(rpos).addScaledVector(_ctmp, camDistSmooth/cd);
   const tY=terrainHeight(camera.position.x,camera.position.z)+22;
   if (camera.position.y<tY) camera.position.y=tY;
-  _look.copy(rpos).addScaledVector(_cf,LOOK_AHEAD);
+  const orbAmt=clamp((Math.abs(camOrbitAz)+Math.abs(camOrbitEl))/0.5,0,1);   // look at the craft itself while orbiting
+  _look.copy(rpos).addScaledVector(_cf,LOOK_AHEAD*(1-orbAmt));
   _ml.lookAt(camera.position,_look,_cUp); _cq.setFromRotationMatrix(_ml);
   camera.quaternion.slerp(_cq, 1-Math.exp(-dt*2.2));           // smooth aim
   const sn=clamp(invLerp(SPD_LO,SPD_HI,glider.gndspeed),0,1);
-  const fov=70+sn*16; camera.fov+=(fov-camera.fov)*Math.min(1,dt*4); camera.updateProjectionMatrix();
-  document.getElementById('vign').style.opacity=Math.max(0,(sn-0.5))*0.8;
+  const fov=70+sn*16+nearMiss*9; camera.fov+=(fov-camera.fov)*Math.min(1,dt*6); camera.updateProjectionMatrix();  // near-miss punches FOV
+  document.getElementById('vign').style.opacity=Math.max(Math.max(0,(sn-0.5))*0.8, nearMiss*0.66);                // + vignette
 }
 
 /* ===================== HUD — glass-cockpit instruments ===================== */
@@ -914,7 +959,7 @@ function updateHUD(dt){
 }
 
 /* ===================== AUDIO (procedural wind + variometer beep) ===================== */
-let audioCtx=null, windGain=null, windFilt=null, audioOn=true;
+let audioCtx=null, windGain=null, windFilt=null, audioOn=(()=>{ try{ return localStorage.getItem('swooper_mute')!=='1'; }catch(e){ return true; } })();
 let varioOsc=null, varioGain=null, beepPhase=0;
 function initAudio(){
   try{
@@ -936,8 +981,8 @@ function updateAudio(){
   if(!audioCtx||audioCtx.state!=='running'||!windGain) return;
   const sp=glider.airspeed, agl=glider.pos.y-terrainHeight(glider.pos.x,glider.pos.z);
   const sn=clamp((sp-50)/240,0,1), prox=clamp(1-agl/700,0,1), now=audioCtx.currentTime;
-  windGain.gain.setTargetAtTime(audioOn?(0.03+0.17*sn*sn+0.07*prox):0, now, 0.12);
-  windFilt.frequency.setTargetAtTime(320+sp*4.2+prox*700, now, 0.12);
+  windGain.gain.setTargetAtTime(audioOn?(0.03+0.17*sn*sn+0.07*prox+0.16*nearMiss):0, now, 0.08);   // near-miss whoosh swell
+  windFilt.frequency.setTargetAtTime(320+sp*4.2+prox*700+nearMiss*1100, now, 0.08);
 }
 function updateVarioSound(vario, dt){   // vario in m/s (vel.y*0.1)
   if(!audioCtx||audioCtx.state!=='running'||!varioGain) return;
@@ -970,20 +1015,23 @@ function loop(now){
   if (state==='flying'){
     acc+=frame; let guard=0;
     while(acc>=FIXED && guard++<8){ prevPos.copy(glider.pos); prevQ.copy(glider.q); fixedStep(); acc-=FIXED; }
-    updateHUD(frame); updateTerrain(); updateClouds(); updateThermals();
-    thermMat.uniforms.uTime.value=simTime;
-  }
+    updateHUD(frame); updateTerrain(); updateClouds();
+    const spF=clamp((glider.gndspeed-120)/120,0,1);                       // near-miss only thrills when fast
+    const nmT=fxOn? clamp(1-clearanceNow()/90,0,1)*spF : 0;
+    nearMiss += (nmT-nearMiss)*Math.min(1,frame*5);
+  } else nearMiss*=0.92;
   const alpha = state==='flying' ? clamp(acc/FIXED,0,1) : 1;
   _rp.lerpVectors(prevPos, glider.pos, alpha);
   _rq.copy(prevQ).slerp(glider.q, alpha);
   if(!previewMode){ gliderGroup.position.copy(_rp); gliderGroup.quaternion.copy(_rq);
     updateCamera(frame||FIXED, _rp, _rq); }
   updateFlex(frame||FIXED);
+  if(state==='flying') updateTrails(_rp,_rq); else { trailR.mat.uniforms.uOpacity.value=0; trailL.mat.uniforms.uOpacity.value=0; }
+  updateBrakeFX();
   sky.position.copy(camera.position);
   sun.position.copy(_rp).add(SUN_OFFSET); sun.target.position.copy(_rp); sun.target.updateMatrixWorld();
   sunDisc.position.copy(camera.position).addScaledVector(SUN_DIR,44000);
   updateAirParticles(frame||FIXED);
-  updateSnow(frame||FIXED);
   renderer.render(scene,camera);
 }
 addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
@@ -993,7 +1041,7 @@ glider.pos.set(0, Math.max(terrainHeight(0,0)+1300, 2700), 0);
 { const m=new THREE.Matrix4().lookAt(ZERO,new THREE.Vector3(0,-0.10,-1).normalize(),WORLD_UP); glider.q.setFromRotationMatrix(m); }
 prevPos.copy(glider.pos); prevQ.copy(glider.q);
 _f.set(0,0,-1).applyQuaternion(glider.q);
-updateTerrain(); updateClouds(); updateThermals();
+updateTerrain(); updateClouds();
 camera.position.set(0, glider.pos.y+10, 36); camera.lookAt(0, glider.pos.y-6, -40);
 requestAnimationFrame(loop);
 if(new URLSearchParams(location.search).get('go')==='1') startFlight();   // ?seed=N&go=1 -> skip menu, fly straight in
@@ -1014,17 +1062,22 @@ window.__swooper={
     camera.position.set(Math.sin(az)*Math.cos(el)*dist, Math.sin(el)*dist, Math.cos(az)*Math.cos(el)*dist); camera.lookAt(0,0.4,0); },
   varioGainNow(){ return varioGain?+varioGain.gain.value.toFixed(4):-1; },
   palette(){ return {seed, blueHour:PAL.blueHour, sun:'#'+PAL.sun.getHexString(), horizon:'#'+PAL.horizon.getHexString(), skyTop:'#'+PAL.skyTop.getHexString(), fog:'#'+PAL.fog.getHexString(), green:PAL.green.map(x=>+x.toFixed(2)), snow:PAL.snow.map(x=>+x.toFixed(2))}; },
-  snowOpacity(){ return +snowMat.opacity.toFixed(3); },
   setRim(s){ if(rimUniforms) rimUniforms.uRimStrength.value=s; },
   windCompare(x,z,y=2900){ const a=windBaseAt(x,z,simTime,new THREE.Vector3()), b=windSteeredAt(x,z,y,simTime,new THREE.Vector3()); return {base:{mag:+Math.hypot(a.x,a.z).toFixed(1),ang:+(Math.atan2(a.x,-a.z)*DEG).toFixed(0)}, steered:{mag:+Math.hypot(b.x,b.z).toFixed(1)}}; },
   findThermal(){ for(let R=1700;R<16000;R+=1700)for(let a=0;a<16;a++){ const x=Math.round(Math.cos(a/16*6.28)*R/1700)*1700, z=Math.round(Math.sin(a/16*6.28)*R/1700)*1700, s=thermalStrength(x,z), g=terrainHeight(x,z); if(s>0.5&&g<2000) return {x,z,s:+s.toFixed(2),g:Math.round(g)}; } return null; },
-  thermalView(x,z){ previewMode=true; gliderGroup.position.set(0,-99999,0); glider.pos.set(x,2900,z); thermX=null; updateThermals();
-    camera.up.set(0,1,0); const g=terrainHeight(x,z); camera.position.set(x+330,g+520,z+330); camera.lookAt(x,g+650,z); thermMat.uniforms.uTime.value=12.0; },
+  brakeNow(){ return +brake.toFixed(3); },
+  spoilerDeg(){ return +(flex.spoilerR.rotation.x*DEG).toFixed(1); },
+  nearMissNow(){ return +nearMiss.toFixed(3); },
+  clearance(){ return +clearanceNow().toFixed(0); },
+  crashState(){ return {on:crashOn, state}; }, setCrash(v){ crashOn=v; },
+  trailOpacity(){ return +trailR.mat.uniforms.uOpacity.value.toFixed(3); }, setTrails(v){ trailsOn=v; },
+  orbit(az,el){ camOrbitAz=az; camOrbitEl=el; camIdle=0; }, camAz(){ return +camOrbitAz.toFixed(3); },
+  audioState(){ return audioOn; },
   sunView(y=7000){ previewMode=true; gliderGroup.position.set(0,-99999,0); camera.position.set(0,y,0); camera.lookAt(new THREE.Vector3(0,y,0).add(SUN_DIR.clone().multiplyScalar(1000))); },
   camUpWorldY(){ return +(new THREE.Vector3(0,1,0).applyQuaternion(camera.quaternion).y).toFixed(3); },
   camDist(){ return +camera.position.distanceTo(gliderGroup.position).toFixed(1); },
-  sim(n,h=0,v=0,yaw=0){
-    inputOverride={h,v,yaw}; let minA=999,maxA=-999;
+  sim(n,h=0,v=0,yaw=0,brk=0){
+    inputOverride={h,v,yaw,brake:brk}; let minA=999,maxA=-999;
     for(let i=0;i<n;i++){ fixedStep(); const f=new THREE.Vector3(0,0,-1).applyQuaternion(glider.q);
       const a=Math.acos(clamp(f.y,-1,1))*DEG; minA=Math.min(minA,a);maxA=Math.max(maxA,a); }
     inputOverride=null;
@@ -1033,7 +1086,7 @@ window.__swooper={
              betaDeg:+(lastBeta*DEG).toFixed(1), fwdY:+f.y.toFixed(3), upY:+u.y.toFixed(3), stall:+glider.stall.toFixed(2),
              pitchRange:[+minA.toFixed(1),+maxA.toFixed(1)], heading:+Math.atan2(f.x,-f.z).toFixed(3),
              y:+glider.pos.y.toFixed(0), agl:+(glider.pos.y-terrainHeight(glider.pos.x,glider.pos.z)).toFixed(0),
-             vY:+glider.vel.y.toFixed(1), gload:+glider.gload.toFixed(2) };
+             vY:+glider.vel.y.toFixed(1), gload:+glider.gload.toFixed(2), brake:+brake.toFixed(2) };
   }
 };
 

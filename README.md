@@ -6,10 +6,12 @@ Inspired by *Superflight*, but a clean-room original: our own code, our own flig
 
 **▶ Play:** https://emorozoff.github.io/swooper/
 
-## Controls (keyboard)
+## Controls (keyboard / mouse)
 - **↓ / S** — nose up · **↑ / W** — nose down
 - **← / →** (or **A / D**) — roll / turn · **Q / E** — yaw (rudder)
-- **Space** — freeze-frame pause (time + sound stop, study the view) · **Esc** — menu (seed / settings / restart)
+- **Space (hold)** — airbrakes: spoilers pop up, bleeding speed and lift for a steeper descent
+- **P** — freeze-frame pause (time + sound stop, study the view) · **Esc** — settings
+- **Mouse drag** — look around the glider (eases back to chase when released)
 - **M** — mute sound · **R** — restart
 
 ## Finding lift (soaring)
@@ -18,7 +20,7 @@ Dark patches on the ground and **cumulus clouds** mark strong thermals. Fly towa
 ## Sunset worlds (seeds)
 Every world is a fixed sunset under a low warm sun with long shadows and atmospheric haze. The **seed** (set in the menu, or `?seed=N` in the URL) picks the mountains, the whole colour mood — golden, rosy, amber, or a rare cool "blue hour" — **and the prevailing wind** (each world blows from a different direction at a different strength), all harmonised so it always reads as one coherent sunset. Same seed → same world.
 
-**Snow** flurries drift near the peaks, and strong thermals raise a faint **dust column** off the ground (so you can spot lift below as well as by the cloud above). Wind **speeds up over ridges and stalls in the lee**, so ridge soaring reads off the terrain.
+Strong thermals **darken the ground** beneath them — look down for the patch, up for the cumulus that caps it. Wind **speeds up over ridges and stalls in the lee**, so ridge soaring reads off the terrain. Fly too close and you'll **crash into the mountainside** (toggle off in settings); skim it instead and the air roars past.
 
 ## Flexible wings
 The glider's wings bow up at the root under aerodynamic load (G), with a springy settle. Purely visual — physics is a point-mass, so the flex never changes how the glider flies.
