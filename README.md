@@ -18,7 +18,7 @@ Inspired by *Superflight*, but a clean-room original: our own code, our own flig
 Dark patches on the ground and **cumulus clouds** mark strong thermals. Fly toward them, listen for the **variometer beep** (faster/higher = climbing), then circle to stay in the rising column.
 
 ## Sunset worlds (seeds)
-Every world is a fixed sunset under a low warm sun with long shadows and atmospheric haze. The **seed** (set in the menu, or `?seed=N` in the URL) picks the mountains, the whole colour mood — golden, rosy, amber, or a rare cool "blue hour" — **and the prevailing wind** (each world blows from a different direction at a different strength), all harmonised so it always reads as one coherent sunset. Same seed → same world.
+Every world is a fixed sunset under a low warm sun with long shadows and atmospheric haze. The **seed** (set in the menu — it's saved in your browser, so the link stays clean) picks the mountains, the whole colour mood — golden, rosy, amber, or a rare cool "blue hour" — **and the prevailing wind** (each world blows from a different direction at a different strength), all harmonised so it always reads as one coherent sunset. Same seed → same world.
 
 Strong thermals **darken the ground** beneath them — look down for the patch, up for the cumulus that caps it. Wind **speeds up over ridges and stalls in the lee**, so ridge soaring reads off the terrain. Fly too close and you'll **crash into the mountainside** (toggle off in settings); skim it instead and the air roars past.
 

@@ -139,7 +139,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.57';
+const VERSION = '0.58';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -212,7 +212,16 @@ const WORLD_UP=new THREE.Vector3(0,1,0), WORLD_DOWN=new THREE.Vector3(0,-1,0), Z
 const DEG=180/Math.PI;
 
 /* ===================== SEED & PALETTE (A1 — per-seed sunset look; world reproducible) ===================== */
-const seed = (()=>{ const s=parseInt(new URLSearchParams(location.search).get('seed'),10); return Number.isFinite(s)?(s>>>0):(Math.floor(Math.random()*1e9)>>>0); })();
+// seed lives in localStorage (the URL stays clean). A legacy ?seed=N link is still honoured once, then stripped.
+const seed = (()=>{
+  const sp=new URLSearchParams(location.search), u=parseInt(sp.get('seed'),10);
+  let s = Number.isFinite(u) ? (u>>>0) : NaN;
+  if(!Number.isFinite(s)){ const ls=prefN('seed',NaN); s = Number.isFinite(ls) ? (ls>>>0) : (Math.floor(Math.random()*1e9)>>>0); }
+  prefSet('seed', s);
+  if(sp.get('go')==='1'){ try{ sessionStorage.setItem('sw_go','1'); }catch(e){} }    // legacy ?go=1 still auto-starts
+  if(location.search){ try{ history.replaceState(null,'',location.pathname); }catch(e){} }   // keep the URL clean
+  return s;
+})();
 const _wr=mulberry32((seed^0x5bd1e995)>>>0); const WORLD_OX=_wr()*900-450, WORLD_OZ=_wr()*900-450;   // each seed = different mountains too
 function hsv2rgb(h,s,v){ h=((h%1)+1)%1; const i=Math.floor(h*6),f=h*6-i,p=v*(1-s),q=v*(1-f*s),t=v*(1-(1-f)*s);
   switch(i%6){case 0:return[v,t,p];case 1:return[q,v,p];case 2:return[p,v,t];case 3:return[p,q,v];case 4:return[t,p,v];default:return[v,p,q];} }
@@ -728,7 +737,7 @@ const menuEl=document.getElementById('menu'), pauseChip=document.getElementById(
 document.getElementById('play').onclick=startFlight;
 document.getElementById('ver').textContent='v'+VERSION;
 document.getElementById('tag').textContent='swooper v'+VERSION;
-function goSeed(v,auto){ location.href=location.pathname+'?seed='+((v>>>0)||0)+(auto?'&go=1':''); }
+function goSeed(v,auto){ prefSet('seed',(v>>>0)||0); if(auto){ try{ sessionStorage.setItem('sw_go','1'); }catch(e){} } location.href=location.pathname; }   // clean URL, seed in storage
 function setAudioOn(v){ audioOn=v; prefSet('sound', v?'1':'0'); const c=document.getElementById('set-sound'); if(c)c.checked=v; }
 function setVarioOn(v){ varioOn=v; prefSet('vario', v?'1':'0'); const c=document.getElementById('set-vario'); if(c)c.checked=v; }
 function setGfx(q){ gfxQ=q; prefSet('gfx', q); applyGraphics(q); const seg=document.getElementById('set-gfx'); if(seg) Array.from(seg.children).forEach(btn=>btn.classList.toggle('on', +btn.dataset.q===q)); }
@@ -1135,7 +1144,7 @@ _f.set(0,0,-1).applyQuaternion(glider.q);
 updateTerrain(); updateClouds();
 camera.position.set(0, glider.pos.y+10, 36); camera.lookAt(0, glider.pos.y-6, -40);
 requestAnimationFrame(loop);
-if(new URLSearchParams(location.search).get('go')==='1') startFlight();   // ?seed=N&go=1 -> skip menu, fly straight in
+if((()=>{ try{ return sessionStorage.getItem('sw_go')==='1'; }catch(e){ return false; } })()){ try{ sessionStorage.removeItem('sw_go'); }catch(e){} startFlight(); }   // ⟳ from settings -> skip menu, fly straight in
 
 /* ===================== headless hooks ===================== */
 window.__swooper={
