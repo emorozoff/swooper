@@ -89,7 +89,7 @@
     <div class="title">swooper</div>
     <div class="ver" id="ver">v0.20</div>
     <button class="play" id="play">START</button>
-    <div class="seedrow subtle">сид <input id="seedin" inputmode="numeric" spellcheck="false"><button id="seedgo" title="новый мир">⟳</button><button id="seedrnd" title="случайный мир">🎲</button></div>
+    <div class="seedrow subtle">сид <input id="seedin" inputmode="numeric" spellcheck="false"><button id="seedgo" title="новый мир">⟳</button></div>
   </div>
 </div>
 
@@ -112,7 +112,7 @@
       <button class="play ghost" id="set-restart">Рестарт</button>
     </div>
     <div class="sethint">Esc — продолжить · P — пауза · Space — тормоза · R — рестарт</div>
-    <div class="seedrow subtle">сид <input id="seedin2" inputmode="numeric" spellcheck="false"><button id="seedrnd2" title="случайный мир">🎲</button></div>
+    <div class="seedrow subtle">сид <input id="seedin2" inputmode="numeric" spellcheck="false"><button id="seedgo2" title="лететь в этот мир">⟳</button></div>
   </div>
 </div>
 
@@ -122,7 +122,6 @@
     <div class="ver" id="crashsub">столкновение с рельефом</div>
     <div class="setbtns">
       <button class="play" id="crash-restart">Заново</button>
-      <button class="play ghost" id="crash-rnd">🎲 новый мир</button>
     </div>
     <div class="sethint">R — заново</div>
   </div>
@@ -140,7 +139,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.55';
+const VERSION = '0.56';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -181,7 +180,7 @@ const I_ROLL = 0.80, I_PITCH = 2.00, I_YAW = 2.40;
 // just below the (now higher) stall AoA -> max-G, clean, loop-capable.
 const ROLL_POWER = 7.5;               // gentler roll rate
 // asymmetric pitch: nose-up (pull) gentle; nose-down (push) also eased a bit.
-const PITCH_POWER_UP = 7.0, PITCH_POWER_DOWN = 9.0;
+const PITCH_POWER_UP = 7.0, PITCH_POWER_DOWN = 6.0;   // gentler nose-down (Up arrow) — eased per feedback
 const YAW_CTRL = 4.0;                 // rudder authority (Q/E) — eased 1.5×
 // aerodynamic stability (weathervane).
 const PITCH_STAB = 36.0, YAW_STAB = 20.0;
@@ -204,7 +203,7 @@ const MPS = 0.27, ALT_BASE = 2500;
 const GUST_AMP = 9.0, SQUALL_AMP = 18.0, GUST_ROLL = 0.5;
 
 const clamp=(v,a,b)=> v<a?a:v>b?b:v;
-// persisted settings — one localStorage key each (prefix sw_). 🎲 only changes the seed, never these.
+// persisted settings — one localStorage key each (prefix sw_). Changing the seed never resets these.
 function prefB(k,d){ try{ const v=localStorage.getItem('sw_'+k); return v===null?d:v==='1'; }catch(e){ return d; } }
 function prefN(k,d){ try{ const v=parseFloat(localStorage.getItem('sw_'+k)); return Number.isFinite(v)?v:d; }catch(e){ return d; } }
 function prefSet(k,v){ try{ localStorage.setItem('sw_'+k, v); }catch(e){} }
@@ -730,7 +729,6 @@ document.getElementById('play').onclick=startFlight;
 document.getElementById('ver').textContent='v'+VERSION;
 document.getElementById('tag').textContent='swooper v'+VERSION;
 function goSeed(v,auto){ location.href=location.pathname+'?seed='+((v>>>0)||0)+(auto?'&go=1':''); }
-function randomSeed(auto){ goSeed(Math.floor(Math.random()*1e9), auto); }   // 🎲: ONLY the seed changes — all settings persist
 function setAudioOn(v){ audioOn=v; prefSet('sound', v?'1':'0'); const c=document.getElementById('set-sound'); if(c)c.checked=v; }
 function setVarioOn(v){ varioOn=v; prefSet('vario', v?'1':'0'); const c=document.getElementById('set-vario'); if(c)c.checked=v; }
 function setGfx(q){ gfxQ=q; prefSet('gfx', q); applyGraphics(q); const seg=document.getElementById('set-gfx'); if(seg) Array.from(seg.children).forEach(btn=>btn.classList.toggle('on', +btn.dataset.q===q)); }
@@ -749,7 +747,6 @@ function openSettings(){ if(state!=='flying'&&state!=='paused') return; state='s
 // start menu seed field (reload to that world)
 { const si=document.getElementById('seedin'); si.value=seed;
   document.getElementById('seedgo').onclick=()=>goSeed(parseInt(si.value,10)||0,false);
-  document.getElementById('seedrnd').onclick=()=>randomSeed(false);
   si.addEventListener('keydown',e=>{ if(e.code==='Enter') goSeed(parseInt(si.value,10)||0,false); }); }
 // settings menu handlers
 document.getElementById('set-resume').onclick=resumeFlight;
@@ -762,11 +759,10 @@ document.getElementById('set-fx').onchange=e=>{ fxOn=e.target.checked; prefSet('
 document.getElementById('set-therm').oninput=e=>{ setThermals(parseFloat(e.target.value)); };
 document.getElementById('set-gfx').querySelectorAll('button').forEach(btn=>{ btn.onclick=()=>setGfx(+btn.dataset.q); });
 { const s2=document.getElementById('seedin2');
-  document.getElementById('seedrnd2').onclick=()=>randomSeed(true);
+  document.getElementById('seedgo2').onclick=()=>goSeed(parseInt(s2.value,10)||0,true);
   s2.addEventListener('keydown',e=>{ if(e.code==='Enter') goSeed(parseInt(s2.value,10)||0,true); }); }
 // crash overlay handlers
 document.getElementById('crash-restart').onclick=startFlight;
-document.getElementById('crash-rnd').onclick=()=>randomSeed(true);
 
 function startFlight(){
   initAudio();
@@ -1054,7 +1050,7 @@ function updateHUD(dt){
 
 /* ===================== AUDIO (procedural wind + variometer beep) ===================== */
 let audioCtx=null, windGain=null, windFilt=null, audioOn=prefB('sound',true);
-let varioOn=prefB('vario',true);
+let varioOn=prefB('vario',false);   // variometer beep OFF by default
 let varioOsc=null, varioGain=null, beepPhase=0;
 function initAudio(){
   try{
