@@ -110,7 +110,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.47';
+const VERSION = '0.48';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -288,6 +288,26 @@ function windLift(x,y,z,t){
   const oro=RIDGE_GAIN*(_wbLift.x*gx+_wbLift.z*gz)*Math.exp(-ag/RIDGE_H);  // wind into a windward face -> updraft (lee -> sink)
   const th =THERMAL_GAIN*thermalAt(x,z,t)*Math.exp(-ag/THERMAL_H);         // rising thermal columns
   return clamp(oro+th, -26, 28);   // gentle enough to add lift, not spike AoA into a stall
+}
+// B5 TERRAIN-STEERED WIND: venturi speed-up over windward faces/cols, lee stall, slope deflection,
+// layered on the windBaseAt drift via the SAME terrain gradient windLift uses. Hard-clamped (AoA-safe).
+const STEER_H=1900, VENTURI_GAIN=0.42, LEE_GAIN=0.55, SPEED_MIN=0.55, SPEED_MAX=1.60,
+      DEFLECT_GAIN=0.50, DEFLECT_MAX=0.60, STEER_SNORM=1.7;
+const _wbSteer=new THREE.Vector3();
+function windSteeredAt(x,z,y,t,out){
+  windBaseAt(x,z,t,_wbSteer);
+  const wx=_wbSteer.x, wz=_wbSteer.z, spd=Math.hypot(wx,wz);
+  if(spd<1e-3) return out.copy(_wbSteer);
+  const d=45, gx=(terrainHeight(x+d,z)-terrainHeight(x-d,z))/(2*d), gz=(terrainHeight(x,z+d)-terrainHeight(x,z-d))/(2*d);
+  const fade=Math.exp(-Math.max(0,y-terrainHeight(x,z))/STEER_H);
+  const inv=1/spd, ux=wx*inv, uz=wz*inv;
+  const s=clamp((ux*gx+uz*gz)/STEER_SNORM,-1,1);                       // windward-climb scalar
+  const mul=clamp(1+fade*(s>0?VENTURI_GAIN*s:LEE_GAIN*s), SPEED_MIN, SPEED_MAX);
+  const gm=Math.hypot(gx,gz); let nx=0,nz=0;
+  if(gm>1e-4){ let tx=-gz/gm, tz=gx/gm; if(tx*ux+tz*uz<0){ tx=-tx; tz=-tz; } nx=tx; nz=tz; }   // contour tangent on wind's side
+  const defl=clamp(DEFLECT_GAIN*Math.max(0,s)*gm/STEER_SNORM*fade, 0, DEFLECT_MAX);
+  let dx=ux*(1-defl)+nx*defl, dz=uz*(1-defl)+nz*defl; const dl=Math.hypot(dx,dz)||1;
+  return out.set(dx/dl*spd*mul, 0, dz/dl*spd*mul);
 }
 
 const C_GREEN=PAL.green, C_ROCK=PAL.rock, C_SNOW=PAL.snow;   // seed-driven, sunset-harmonised
@@ -475,6 +495,152 @@ function updateClouds(){
   cloudCenter.needsUpdate=true; cloudSize.needsUpdate=true; cloudBright.needsUpdate=true;
 }
 
+/* ===================== A4 VALLEY WATER — sunset lakes on the deepest valley floors =====================
+   A flat plane at y=WATER, re-centred on the craft. Per-vertex DEPTH is sampled from the real
+   terrainHeight (CPU) on cell-cross, so the shoreline matches the land exactly; the shader fades
+   the shore, tints by depth + a fresnel sky reflection + sun glitter, and melts into PAL.fog. */
+const WATER=-500, WATER_SPAN=20000, WSEG=120, WATER_CELL=1500, WHALF=WATER_SPAN/2;
+const _wdeep=PAL.skyTop.clone().lerp(PAL.skyGround,0.5).multiplyScalar(0.60);
+const waterGeo=new THREE.PlaneGeometry(WATER_SPAN,WATER_SPAN,WSEG,WSEG); waterGeo.rotateX(-Math.PI/2);
+const waterDepth=new Float32Array((WSEG+1)*(WSEG+1));
+waterGeo.setAttribute('aDepth', new THREE.BufferAttribute(waterDepth,1));
+const waterMat=new THREE.ShaderMaterial({ transparent:true, depthWrite:false, side:THREE.FrontSide, fog:false,
+  uniforms:{ uShallow:{value:PAL.horizon.clone()}, uDeep:{value:_wdeep}, uSky:{value:PAL.skyTop.clone()}, uSun:{value:PAL.sunGlow.clone()},
+    uSunDir:{value:SUN_DIR.clone()}, uCam:{value:new THREE.Vector3()}, uFogColor:{value:PAL.fog.clone()}, uFogDensity:{value:0.000068}, uHalf:{value:WHALF} },
+  vertexShader:`attribute float aDepth; varying float vDepth; varying vec3 vWorld; varying float vFog; varying vec2 vLocal;
+    void main(){ vDepth=aDepth; vLocal=position.xz; vec4 wp=modelMatrix*vec4(position,1.0); vWorld=wp.xyz; vec4 mv=viewMatrix*wp; vFog=-mv.z; gl_Position=projectionMatrix*mv; }`,
+  fragmentShader:`uniform vec3 uShallow,uDeep,uSky,uSun,uSunDir,uCam,uFogColor; uniform float uFogDensity,uHalf;
+    varying float vDepth; varying vec3 vWorld; varying float vFog; varying vec2 vLocal;
+    void main(){ if(vDepth<=0.0) discard;
+      float wob=sin(vWorld.x*0.013)+sin(vWorld.z*0.017+1.3);
+      vec3 N=normalize(vec3(0.06*wob,1.0,0.042*wob)); vec3 V=normalize(uCam-vWorld);
+      float fres=pow(1.0-clamp(dot(N,V),0.0,1.0),3.0);
+      float dn=clamp(vDepth/220.0,0.0,1.0); vec3 col=mix(mix(uShallow,uDeep,dn), uSky, fres*0.85);
+      vec3 R=reflect(-V,N); col+=uSun*(pow(max(dot(R,normalize(uSunDir)),0.0),48.0)*0.55);
+      float a=smoothstep(0.0,18.0,vDepth)*mix(0.55,0.92,dn);
+      a*=1.0-smoothstep(uHalf*0.80,uHalf*0.97, max(abs(vLocal.x),abs(vLocal.y)));   // fade plane edge into haze
+      float f=1.0-exp(-vFog*vFog*uFogDensity*uFogDensity); col=mix(col,uFogColor,clamp(f,0.0,1.0));
+      gl_FragColor=vec4(col,a); }`});
+const waterMesh=new THREE.Mesh(waterGeo, waterMat); waterMesh.position.y=WATER; waterMesh.frustumCulled=false; waterMesh.renderOrder=1; scene.add(waterMesh);
+let waterCX=null, waterCZ=null;
+function updateWater(){
+  waterMat.uniforms.uCam.value.copy(camera.position);
+  const ccx=Math.round(glider.pos.x/WATER_CELL), ccz=Math.round(glider.pos.z/WATER_CELL);
+  if(ccx===waterCX&&ccz===waterCZ) return;
+  waterCX=ccx; waterCZ=ccz; const px=ccx*WATER_CELL, pz=ccz*WATER_CELL;
+  waterMesh.position.x=px; waterMesh.position.z=pz;
+  const pos=waterGeo.attributes.position.array; let any=false;
+  for(let i=0;i<waterDepth.length;i++){ const o=i*3, dpt=WATER-terrainHeight(px+pos[o], pz+pos[o+2]); waterDepth[i]=dpt>0?dpt:0; if(dpt>0)any=true; }
+  waterGeo.attributes.aDepth.needsUpdate=true; waterMesh.visible=any;
+}
+
+/* ===================== A5 SCALE PROPS — instanced trees + sparse villages on gentle green lowlands ===================== */
+const PROP_CELL=900, PROP_R=5, TREES_PER_CELL=10, TREE_MAX=1100, HUT_MAX=240;
+const PROP_MIN_H=-200, TREE_MAX_H=1250, TREE_FLAT_NY=0.86, TREE_FADE=700;
+const VILL_MIN_H=-150, VILL_MAX_H=950, VILL_FLAT_NY=0.93, VILL_CHANCE=0.06, VILLAGE_R=70;
+let propCX=null, propCZ=null; const _pd=new THREE.Object3D();
+const treeGeo=(()=>{ const tr=new THREE.CylinderGeometry(0.5,0.9,11,4,1); tr.translate(0,5.5,0);
+  const cn=new THREE.ConeGeometry(7,20,5,1); cn.translate(0,11+20/2-2,0);
+  const a=tr.toNonIndexed(), b=cn.toNonIndexed(), pa=a.attributes.position.array, pb=b.attributes.position.array;
+  const p=new Float32Array(pa.length+pb.length); p.set(pa); p.set(pb,pa.length);
+  const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.BufferAttribute(p,3)); g.computeVertexNormals();
+  tr.dispose(); cn.dispose(); a.dispose(); b.dispose(); return g; })();
+const leafCol=new THREE.Color(C_GREEN[0],C_GREEN[1],C_GREEN[2]).multiplyScalar(0.82);
+const treeMesh=new THREE.InstancedMesh(treeGeo, new THREE.MeshLambertMaterial({color:0xffffff, flatShading:true}), TREE_MAX);
+treeMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); treeMesh.frustumCulled=false; treeMesh.castShadow=false; treeMesh.count=0; scene.add(treeMesh);
+const hutCol=new THREE.Color(C_ROCK[0],C_ROCK[1],C_ROCK[2]).lerp(PAL.sunGlow,0.08);
+const hutMesh=new THREE.InstancedMesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshLambertMaterial({color:hutCol, flatShading:true}), HUT_MAX);
+hutMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage); hutMesh.frustumCulled=false; hutMesh.castShadow=true; hutMesh.count=0; scene.add(hutMesh);
+const _tcol=new THREE.Color();
+function propNY(wx,wz){ const gx=(terrainHeight(wx+45,wz)-terrainHeight(wx-45,wz))/90, gz=(terrainHeight(wx,wz+45)-terrainHeight(wx,wz-45))/90; return 1/Math.sqrt(1+gx*gx+gz*gz); }
+function updatePropsScale(){
+  const ccx=Math.round(glider.pos.x/PROP_CELL), ccz=Math.round(glider.pos.z/PROP_CELL);
+  if(ccx===propCX&&ccz===propCZ) return; propCX=ccx; propCZ=ccz;
+  let ti=0, hi=0;
+  for(let dz=-PROP_R;dz<=PROP_R&&ti<TREE_MAX;dz++)for(let dx=-PROP_R;dx<=PROP_R&&ti<TREE_MAX;dx++){
+    const cx=ccx+dx, cz=ccz+dz, cwx=cx*PROP_CELL, cwz=cz*PROP_CELL;
+    for(let k=0;k<TREES_PER_CELL&&ti<TREE_MAX;k++){
+      const h1=hash2(cx*131+k*17,cz*977+k*7), h2=hash2(cx*53+k*3,cz*191+k*29), h3=hash2(cx*311+k,cz*97+k*13);
+      const wx=cwx+(h1-0.5)*PROP_CELL, wz=cwz+(h2-0.5)*PROP_CELL, h=terrainHeight(wx,wz);
+      if(h<=PROP_MIN_H||h>=TREE_MAX_H) continue;
+      if(propNY(wx,wz)<TREE_FLAT_NY) continue;
+      if(h3>clamp((TREE_MAX_H-h)/TREE_FADE,0,1)) continue;                 // density taper toward rock line
+      const sc=0.7+1.6*hash2(cx*7+k*5,cz*19+k*3);
+      _pd.position.set(wx,h-1.5,wz); _pd.rotation.set(0,h1*6.2831,0); _pd.scale.set(sc,sc,sc); _pd.updateMatrix();
+      treeMesh.setMatrixAt(ti,_pd.matrix); _tcol.copy(leafCol).multiplyScalar(0.85+0.3*h2); treeMesh.setColorAt(ti,_tcol); ti++;
+    }
+    if(hi<HUT_MAX && hash2(cx*991+5,cz*617+3)<VILL_CHANCE){
+      const vwx=cwx+(hash2(cx*7,cz*7)-0.5)*PROP_CELL*0.5, vwz=cwz+(hash2(cx*3,cz*9)-0.5)*PROP_CELL*0.5, vh=terrainHeight(vwx,vwz);
+      if(vh>VILL_MIN_H&&vh<VILL_MAX_H&&propNY(vwx,vwz)>VILL_FLAT_NY){
+        const nH=4+Math.floor(hash2(cx*41,cz*29)*6);
+        for(let k=0;k<nH&&hi<HUT_MAX;k++){
+          const ang=hash2(cx*13+k*7,cz*17+k*3)*6.2831, r=VILLAGE_R*Math.sqrt(hash2(cx*5+k,cz*11+k));
+          const hx=vwx+Math.cos(ang)*r, hz=vwz+Math.sin(ang)*r, hh=terrainHeight(hx,hz);
+          const sx=9+7*hash2(cx*23+k,cz*7+k), sy=6+5*hash2(cx*3+k,cz*31+k), sz=9+7*hash2(cx*19+k,cz*5+k);
+          _pd.position.set(hx,hh+sy/2-1.0,hz); _pd.rotation.set(0,Math.floor(hash2(cx+k,cz+k)*4)*1.5708,0); _pd.scale.set(sx,sy,sz); _pd.updateMatrix();
+          hutMesh.setMatrixAt(hi,_pd.matrix); hi++;
+        }
+      }
+    }
+  }
+  treeMesh.count=ti; hutMesh.count=hi; treeMesh.instanceMatrix.needsUpdate=true;
+  if(treeMesh.instanceColor) treeMesh.instanceColor.needsUpdate=true; hutMesh.instanceMatrix.needsUpdate=true;
+}
+
+/* ===================== B3 VISIBLE THERMAL MARKERS — rising dust-devil columns in strong thermals ===================== */
+const TH_CELL=1700, TH_R=4, TH_PUFFS=10, TH_RISE=240, TH_SWIRL=0.55, TH_TWIST=5.0, TH_RADIUS=170, TH_BASE_SIZE=190, TH_OPACITY=0.22;
+const THERM_N=(2*TH_R+1)*(2*TH_R+1)*TH_PUFFS;
+let thermX=null, thermZ=null;
+const thAnchor=new THREE.InstancedBufferAttribute(new Float32Array(THERM_N*3),3);
+const thFrac=new THREE.InstancedBufferAttribute(new Float32Array(THERM_N),1);
+const thStr=new THREE.InstancedBufferAttribute(new Float32Array(THERM_N),1);
+const thPhase=new THREE.InstancedBufferAttribute(new Float32Array(THERM_N),1);
+const thPuff=new THREE.InstancedBufferAttribute(new Float32Array(THERM_N),1);
+let thermMat;
+{ const cv=document.createElement('canvas'); cv.width=cv.height=64; const g2=cv.getContext('2d');
+  const grd=g2.createRadialGradient(32,32,1,32,32,31); grd.addColorStop(0,'rgba(255,255,255,0.85)'); grd.addColorStop(0.5,'rgba(255,255,255,0.40)'); grd.addColorStop(1,'rgba(255,255,255,0)');
+  g2.fillStyle=grd; g2.fillRect(0,0,64,64); const tex=new THREE.CanvasTexture(cv);
+  const quad=new THREE.PlaneGeometry(1,1), tgeo=new THREE.InstancedBufferGeometry();
+  tgeo.setIndex(quad.index); tgeo.setAttribute('position',quad.attributes.position); tgeo.setAttribute('uv',quad.attributes.uv);
+  tgeo.setAttribute('aAnchor',thAnchor); tgeo.setAttribute('aFrac',thFrac); tgeo.setAttribute('aStr',thStr); tgeo.setAttribute('aPhase',thPhase); tgeo.setAttribute('aPuff',thPuff);
+  tgeo.instanceCount=THERM_N;
+  thermMat=new THREE.ShaderMaterial({ transparent:true, depthWrite:false,
+    uniforms:{ map:{value:tex}, uTime:{value:0}, uSun:{value:PAL.sunGlow.clone()}, uBase:{value:PAL.skyGround.clone()},
+      uOpacity:{value:TH_OPACITY}, uFogColor:{value:PAL.fog.clone()}, uFogDensity:{value:0.000068},
+      uRise:{value:TH_RISE}, uSwirl:{value:TH_SWIRL}, uTwist:{value:TH_TWIST}, uRadius:{value:TH_RADIUS}, uSize:{value:TH_BASE_SIZE} },
+    vertexShader:`attribute vec3 aAnchor; attribute float aFrac,aStr,aPhase,aPuff; uniform float uTime,uRise,uSwirl,uTwist,uRadius,uSize;
+      varying vec2 vUv; varying float vFade,vFr,vFog;
+      void main(){ vUv=uv;
+        float colTop=min(aAnchor.y+1300.0, 2400.0); float colH=colTop-aAnchor.y;     // cap top <=2400 -> always BELOW the craft
+        if(aStr<0.001 || colH<150.0){ gl_Position=vec4(2.0,2.0,2.0,1.0); return; }
+        float fr=fract(aFrac + uTime*uRise/colH + aPhase); vFr=fr;
+        float th=aPhase*6.2831 + uTime*uSwirl*(1.0+0.6*aStr) + fr*uTwist;
+        float taper=mix(1.0,0.35,fr); float r=uRadius*aStr*taper*(0.6+0.4*sin(th*0.5));
+        vec3 center=vec3(aAnchor.x+cos(th)*r, aAnchor.y+40.0+fr*colH, aAnchor.z+sin(th)*r);
+        vFade=smoothstep(0.0,0.12,fr)*(1.0-smoothstep(0.78,1.0,fr));
+        float sz=uSize*(0.5+0.5*aStr)*taper*(0.7+0.6*aPuff);
+        vec4 mv=modelViewMatrix*vec4(center,1.0); vFog=-mv.z; mv.xy+=position.xy*sz; gl_Position=projectionMatrix*mv; }`,
+    fragmentShader:`uniform sampler2D map; uniform vec3 uSun,uBase,uFogColor; uniform float uOpacity,uFogDensity; varying vec2 vUv; varying float vFade,vFr,vFog;
+      void main(){ float a=texture2D(map,vUv).a*vFade*uOpacity; if(a<0.004) discard;
+        vec3 col=mix(uBase,uSun, clamp(vFr*0.6+0.4,0.0,1.0));
+        float f=1.0-exp(-vFog*vFog*uFogDensity*uFogDensity); col=mix(col,uFogColor,clamp(f,0.0,1.0));
+        gl_FragColor=vec4(col,a); }`});
+  const thermMesh=new THREE.Mesh(tgeo,thermMat); thermMesh.frustumCulled=false; thermMesh.renderOrder=2; scene.add(thermMesh);
+}
+function updateThermals(){
+  const tcx=Math.round(glider.pos.x/TH_CELL), tcz=Math.round(glider.pos.z/TH_CELL);
+  if(tcx===thermX&&tcz===thermZ) return; thermX=tcx; thermZ=tcz;
+  const A=thAnchor.array, F=thFrac.array, S=thStr.array, P=thPhase.array, U=thPuff.array; let p=0;
+  for(let dz=-TH_R;dz<=TH_R;dz++)for(let dx=-TH_R;dx<=TH_R;dx++){
+    const cx=tcx+dx, cz=tcz+dz, wx=cx*TH_CELL, wz=cz*TH_CELL, s=thermalStrength(wx,wz);
+    if(s>CLOUD_THRESH){
+      const ax=wx+(hash2(cx*71+3,cz*17+9)-0.5)*TH_CELL*0.5, az=wz+(hash2(cx*29+5,cz*53+1)-0.5)*TH_CELL*0.5, gy=terrainHeight(ax,az);
+      for(let k=0;k<TH_PUFFS;k++){ const o=p*3; A[o]=ax; A[o+1]=gy; A[o+2]=az; F[p]=k/(TH_PUFFS-1); S[p]=s; P[p]=hash2(cx*131+k*17,cz*977+k*7); U[p]=hash2(cx*53+k*3,cz*191+k*29); p++; }
+    } else { for(let k=0;k<TH_PUFFS;k++){ S[p]=0; p++; } }
+  }
+  thAnchor.needsUpdate=true; thFrac.needsUpdate=true; thStr.needsUpdate=true; thPhase.needsUpdate=true; thPuff.needsUpdate=true;
+}
+
 /* ===================== GLIDER (mesh + state) ===================== */
 const glider={ pos:new THREE.Vector3(), q:new THREE.Quaternion(), vel:new THREE.Vector3(), angVel:new THREE.Vector3(),
                airspeed:0, gndspeed:0, alpha:0, stall:0, gload:1 };
@@ -586,7 +752,7 @@ function startFlight(){
   glider.airspeed=INIT_SPEED; glider.gndspeed=INIT_SPEED; glider.alpha=0; glider.stall=0;
   rawH=rawV=horizontalInput=verticalInput=0;
   prevPos.copy(glider.pos); prevQ.copy(glider.q);
-  updateTerrain(); cloudCX=null; updateClouds();
+  updateTerrain(); cloudCX=null; updateClouds(); waterCX=null; updateWater(); propCX=null; updatePropsScale(); thermX=null; updateThermals();
   previewMode=false;
   state='flying'; menuEl.classList.add('hidden'); pauseChip.classList.add('hidden'); settingsEl.classList.add('hidden');
 }
@@ -633,7 +799,7 @@ function fixedStep(){
   const t=simTime;
   const sq=SQUALL_AMP*Math.pow(Math.max(0,Math.sin(t*0.32+0.5)),6);   // sharp gust front, peaks ~every 20s
   const sqA=t*0.23;
-  windBaseAt(glider.pos.x, glider.pos.z, t, _wbStep);                 // local drifting breeze (varies over km)
+  windSteeredAt(glider.pos.x, glider.pos.z, glider.pos.y, t, _wbStep); // local drift + terrain steering (venturi/lee)
   _wind.set(
     _wbStep.x + GUST_AMP*(Math.sin(t*0.37)+0.6*Math.sin(t*0.91+1.3)) + sq*Math.cos(sqA),
                 GUST_AMP*0.5*(Math.sin(t*0.61+0.8)+0.5*Math.sin(t*1.23+2.1)) + sq*0.45*Math.sin(t*0.8),
@@ -822,7 +988,7 @@ const wVal=E('text',{x:WC,y:WSZ+21,'text-anchor':'middle','font-size':11.5,fill:
 wVal.textContent=Math.round(WIND.length());                  // initial (mean) before flight
 const _wbHud=new THREE.Vector3();
 function updWind(hdg){                                        // live LOCAL wind (direction + strength)
-  windBaseAt(glider.pos.x, glider.pos.z, simTime, _wbHud);
+  windSteeredAt(glider.pos.x, glider.pos.z, glider.pos.y, simTime, _wbHud);
   const wAng=Math.atan2(_wbHud.x,-_wbHud.z)*DEG, mag=Math.hypot(_wbHud.x,_wbHud.z);
   wArrow.setAttribute('transform',`rotate(${(wAng-hdg).toFixed(1)} ${WC} ${WCY})`);
   wVal.textContent=Math.round(mag);
@@ -892,7 +1058,8 @@ function loop(now){
   if (state==='flying'){
     acc+=frame; let guard=0;
     while(acc>=FIXED && guard++<8){ prevPos.copy(glider.pos); prevQ.copy(glider.q); fixedStep(); acc-=FIXED; }
-    updateHUD(frame); updateTerrain(); updateClouds();
+    updateHUD(frame); updateTerrain(); updateClouds(); updateWater(); updatePropsScale(); updateThermals();
+    thermMat.uniforms.uTime.value=simTime;
   }
   const alpha = state==='flying' ? clamp(acc/FIXED,0,1) : 1;
   _rp.lerpVectors(prevPos, glider.pos, alpha);
@@ -914,7 +1081,7 @@ glider.pos.set(0, Math.max(terrainHeight(0,0)+1300, 2700), 0);
 { const m=new THREE.Matrix4().lookAt(ZERO,new THREE.Vector3(0,-0.10,-1).normalize(),WORLD_UP); glider.q.setFromRotationMatrix(m); }
 prevPos.copy(glider.pos); prevQ.copy(glider.q);
 _f.set(0,0,-1).applyQuaternion(glider.q);
-updateTerrain(); updateClouds();
+updateTerrain(); updateClouds(); updateWater(); updatePropsScale(); updateThermals();
 camera.position.set(0, glider.pos.y+10, 36); camera.lookAt(0, glider.pos.y-6, -40);
 requestAnimationFrame(loop);
 if(new URLSearchParams(location.search).get('go')==='1') startFlight();   // ?seed=N&go=1 -> skip menu, fly straight in
@@ -937,6 +1104,19 @@ window.__swooper={
   palette(){ return {seed, blueHour:PAL.blueHour, sun:'#'+PAL.sun.getHexString(), horizon:'#'+PAL.horizon.getHexString(), skyTop:'#'+PAL.skyTop.getHexString(), fog:'#'+PAL.fog.getHexString(), green:PAL.green.map(x=>+x.toFixed(2)), snow:PAL.snow.map(x=>+x.toFixed(2))}; },
   snowOpacity(){ return +snowMat.opacity.toFixed(3); },
   setRim(s){ if(rimUniforms) rimUniforms.uRimStrength.value=s; },
+  waterVisible(){ return waterMesh.visible; },
+  terrMin(ext=14000,N=80){ let mn=1e9,mx=-1e9,mloc=null; for(let i=0;i<N;i++)for(let j=0;j<N;j++){ const x=-ext+2*ext*i/(N-1),z=-ext+2*ext*j/(N-1),h=terrainHeight(x,z); if(h<mn){mn=h;mloc={x:Math.round(x),z:Math.round(z)};} if(h>mx)mx=h; } return {min:+mn.toFixed(0),max:+mx.toFixed(0),at:mloc,floods:mn<WATER}; },
+  topDown(x,z,h=2600){ previewMode=true; gliderGroup.position.set(0,-99999,0); glider.pos.set(x,h,z); waterCX=null; updateWater(); camera.position.set(x,h,z); camera.up.set(0,0,-1); camera.lookAt(x,WATER,z); },
+  lakeView(x,z){ previewMode=true; gliderGroup.position.set(0,-99999,0); glider.pos.set(x,1500,z); waterCX=null; updateWater();
+    camera.up.set(0,1,0); camera.position.set(x-3800,1100,z-3800); camera.lookAt(x,WATER+60,z); },
+  windCompare(x,z,y=2900){ const a=windBaseAt(x,z,simTime,new THREE.Vector3()), b=windSteeredAt(x,z,y,simTime,new THREE.Vector3()); return {base:{mag:+Math.hypot(a.x,a.z).toFixed(1)}, steered:{mag:+Math.hypot(b.x,b.z).toFixed(1)}}; },
+  propCount(){ return {trees:treeMesh.count, huts:hutMesh.count}; },
+  findLowland(){ for(let R=900;R<14000;R+=900)for(let a=0;a<16;a++){ const x=Math.round(Math.cos(a/16*6.28)*R), z=Math.round(Math.sin(a/16*6.28)*R), h=terrainHeight(x,z); if(h>150&&h<900&&propNY(x,z)>0.9) return {x,z,h:Math.round(h)}; } return null; },
+  findThermal(){ for(let R=1700;R<16000;R+=1700)for(let a=0;a<16;a++){ const x=Math.round(Math.cos(a/16*6.28)*R/1700)*1700, z=Math.round(Math.sin(a/16*6.28)*R/1700)*1700, s=thermalStrength(x,z), g=terrainHeight(x,z); if(s>0.5&&g<2000) return {x,z,s:+s.toFixed(2),g:Math.round(g)}; } return null; },
+  groundView(x,z){ previewMode=true; gliderGroup.position.set(0,-99999,0); glider.pos.set(x,1400,z); propCX=null; updatePropsScale(); waterCX=null; updateWater(); thermX=null; updateThermals();
+    camera.up.set(0,1,0); const h=terrainHeight(x,z); camera.position.set(x-260,h+150,z-260); camera.lookAt(x+120,h+10,z+120); },
+  thermalView(x,z){ previewMode=true; gliderGroup.position.set(0,-99999,0); glider.pos.set(x,2900,z); thermX=null; updateThermals(); propCX=null; updatePropsScale(); waterCX=null; updateWater();
+    camera.up.set(0,1,0); const g=terrainHeight(x,z); camera.position.set(x+330,g+520,z+330); camera.lookAt(x,g+650,z); thermMat.uniforms.uTime.value=12.0; },
   sunView(y=7000){ previewMode=true; gliderGroup.position.set(0,-99999,0); camera.position.set(0,y,0); camera.lookAt(new THREE.Vector3(0,y,0).add(SUN_DIR.clone().multiplyScalar(1000))); },
   camUpWorldY(){ return +(new THREE.Vector3(0,1,0).applyQuaternion(camera.quaternion).y).toFixed(3); },
   camDist(){ return +camera.position.distanceTo(gliderGroup.position).toFixed(1); },
