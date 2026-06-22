@@ -23,6 +23,12 @@
     font-size:15px; letter-spacing:2px; opacity:0; transition:opacity .1s; text-shadow:0 1px 6px rgba(0,0,0,.6); }
   #stallw.on{ opacity:1; }
   #tag{ position:absolute; bottom:8px; left:12px; font-size:11px; font-weight:700; letter-spacing:2px; opacity:.4; }
+  #modelbar{ position:absolute; top:92px; left:50%; transform:translateX(-50%); text-align:center;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; line-height:1.5;
+    color:#eae4d6; background:rgba(12,16,20,.34); border:1px solid rgba(232,176,75,.3); border-radius:4px;
+    padding:5px 14px; text-shadow:0 1px 4px rgba(0,0,0,.6); }
+  #modelbar b{ color:#e8b04b; font-weight:700; }
+  #modelbar .dim{ opacity:.62; font-weight:400; }
   #vign{ position:fixed; inset:0; pointer-events:none; opacity:0;
     box-shadow: inset 0 0 24vmin 5vmin rgba(0,0,0,0.5); transition:opacity .12s linear; }
   .overlay{ position:fixed; inset:0; display:flex; flex-direction:column; align-items:center;
@@ -51,6 +57,7 @@
   <div id="i-vario" class="inst-wrap"></div>
   <div id="i-wind" class="inst-wrap"></div>
   <div id="stallw">⚠ STALL</div>
+  <div id="modelbar"></div>
   <div id="tag">swooper</div>
 </div>
 
@@ -79,9 +86,10 @@
 
 <script type="module">
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 window.__swooper = {};
 try {
-const VERSION = '0.40';
+const VERSION = '0.41';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -379,7 +387,7 @@ const glider={ pos:new THREE.Vector3(), q:new THREE.Quaternion(), vel:new THREE.
                airspeed:0, gndspeed:0, alpha:0, stall:0, gload:1 };
 const prevPos=new THREE.Vector3(), prevQ=new THREE.Quaternion();
 let wingL=null, wingR=null, bendSmooth=0;   // flexing wing refs + smoothed bend
-function buildGlider(){
+function buildProcGlider(){
   const g=new THREE.Group();
   const matBody =new THREE.MeshLambertMaterial({color:0xeceef2, flatShading:true});
   const matWing =new THREE.MeshLambertMaterial({color:0xd2d6dd, flatShading:true});
@@ -405,8 +413,65 @@ function buildGlider(){
   const fin=new THREE.Mesh(new THREE.BoxGeometry(0.16,2.0,1.6), matAcc); fin.position.set(0,1.0,10.6); g.add(fin);
   return g;
 }
-const gliderGroup=buildGlider(); scene.add(gliderGroup);
-gliderGroup.traverse(o=>{ if(o.isMesh) o.castShadow=true; });
+/* ---- swappable craft models: stock procedural + downloaded glb (1-9/0 to switch, T = restyle) ----
+   Models are CC0/CC-BY (credited in the model bar). Mesh is purely cosmetic — physics is a
+   point-mass + aero, so swapping the model never changes how it flies. */
+const MODELS=[
+  { name:'Stock glider',        kind:'proc',                              author:'swooper',          license:'—' },
+  { name:'Small Airplane',      file:'small_airplane',  rotY:0,   len:18, author:'Vojtěch Balák',    license:'CC-BY' },
+  { name:'Biplane (Airco DH2)', file:'biplane_dh2',     rotY:90,  len:18, author:'Joshua Johanson',  license:'CC-BY' },
+  { name:'Boeing 747',          file:'boeing747',       rotY:-90, len:22, author:'Miha Lunar',       license:'CC-BY' },
+  { name:'Sea Plane',           file:'sea_plane',       rotY:-90, len:18, author:'Neil M',           license:'CC-BY' },
+  { name:'Hang glider',         file:'hang_glider',     rotY:0,   len:16, author:'Poly / Google',    license:'CC-BY' },
+  { name:'Jet',                 file:'jet',             rotY:180, len:19, author:'Poly / Google',    license:'CC-BY' },
+  { name:'Spaceship',           file:'spaceship_q',     rotY:0,   len:18, author:'Quaternius',       license:'CC0' },
+  { name:'Speeder',             file:'speeder_kenney',  rotY:0,   len:15, author:'Kenney',           license:'CC0' },
+  { name:'Flying saucer',       file:'flying_saucer',   rotY:0,   len:14, author:'Poly / Google',    license:'CC-BY' },
+];
+const gliderGroup=new THREE.Group(); scene.add(gliderGroup);
+const craftHolder=new THREE.Group(); gliderGroup.add(craftHolder);
+const _gltf=new GLTFLoader(), _modelCache={};
+let currentModelIdx=0, restyleOn=false;
+const CREAM=new THREE.Color(0xece7da);
+function applyStyle(root, restyle){
+  root.traverse(o=>{ if(!o.isMesh) return; o.castShadow=true; o.receiveShadow=false;
+    if(restyle){
+      const hasVC=!!(o.geometry.attributes && o.geometry.attributes.color);
+      let col;
+      if(hasVC) col=new THREE.Color(0xffffff);
+      else { const sc=(o.material&&o.material.color)?o.material.color.clone():new THREE.Color(0xcfd3da); sc.lerp(CREAM,0.30); col=sc; }
+      o.material=new THREE.MeshLambertMaterial({color:col, flatShading:true, vertexColors:hasVC});
+    }
+  });
+}
+function prepModel(m){                                  // -> Promise<normalized wrapper Group>
+  if(_modelCache[m.file]) return Promise.resolve(_modelCache[m.file]);
+  return new Promise((res,rej)=>{ _gltf.load(`models/${m.file}.glb`, g=>{
+    const root=g.scene, box=new THREE.Box3().setFromObject(root), sz=new THREE.Vector3(), ctr=new THREE.Vector3();
+    box.getSize(sz); box.getCenter(ctr); root.position.sub(ctr);             // center at origin
+    const inner=new THREE.Group(); inner.add(root); inner.rotation.y=(m.rotY||0)*Math.PI/180;
+    const wrap=new THREE.Group(); wrap.add(inner);
+    const maxd=Math.max(sz.x,sz.y,sz.z)||1; wrap.scale.setScalar((m.len||18)/maxd);
+    _modelCache[m.file]=wrap; res(wrap);
+  }, undefined, rej); });
+}
+function clearHolder(){ while(craftHolder.children.length) craftHolder.remove(craftHolder.children[0]); }
+function setModel(idx){
+  idx=((idx%MODELS.length)+MODELS.length)%MODELS.length; currentModelIdx=idx;
+  const m=MODELS[idx]; updateModelBar();
+  if(m.kind==='proc'){ clearHolder(); const g=buildProcGlider(); applyStyle(g,false); craftHolder.add(g); return; }
+  wingL=wingR=null;                                     // imported models: no wing-flex
+  prepModel(m).then(wrap=>{ if(currentModelIdx!==idx) return; clearHolder();
+    const inst=wrap.clone(true); applyStyle(inst, restyleOn); craftHolder.add(inst);
+  }).catch(e=>console.warn('model load failed', m.file, e));
+}
+function updateModelBar(){
+  const m=MODELS[currentModelIdx], el=document.getElementById('modelbar'); if(!el) return;
+  el.innerHTML=`<b>${currentModelIdx+1}. ${m.name}</b>  <span class="dim">${m.author} · ${m.license}</span>`
+    +`<span class="dim"> — стиль: ${currentModelIdx===0?'—':(restyleOn?'наш':'оригинал')}</span>`
+    +`<br><span class="dim">1-9,0 — модель · T — стиль</span>`;
+}
+setModel(0);
 
 /* ===================== INPUT (keyboard) ===================== */
 const keys={}; let sens=1, invert=false, state='menu', simTime=0, spawnY=0;
@@ -416,6 +481,8 @@ addEventListener('keydown',e=>{ if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRigh
   keys[e.code]=true;
   if(e.code==='KeyR'){ if(state!=='menu') startFlight(); }
   else if(e.code==='KeyM'){ audioOn=!audioOn; }
+  else if(e.code==='KeyT'){ restyleOn=!restyleOn; setModel(currentModelIdx); }   // toggle original/our style
+  else if(/^Digit[0-9]$/.test(e.code)){ const d=+e.code.slice(5); setModel(d===0?9:d-1); }  // 1..9 -> models, 0 -> 10th
   else if(e.code==='Escape'){ if(state==='flying'){ state='paused'; pauseEl.classList.remove('hidden'); silenceAudio(); } }
   else if(e.code==='Space'){ if(state==='menu') startFlight(); else if(state==='paused') resumeFlight(); } });
 addEventListener('keyup',e=>{ keys[e.code]=false; });
@@ -782,6 +849,8 @@ window.__swooper={
   tstr(x,z){ return +thermalStrength(x,z).toFixed(3); },
   windBase(x,z){ const v=windBaseAt(x,z,simTime,new THREE.Vector3()); return {x:+v.x.toFixed(1),z:+v.z.toFixed(1),mag:+Math.hypot(v.x,v.z).toFixed(1),ang:+(Math.atan2(v.x,-v.z)*DEG).toFixed(0)}; },
   cloudCount(){ let n=0; for(let i=0;i<cloudSize.array.length;i++) if(cloudSize.array[i]>0) n++; return n; },
+  setModel(i){ setModel(i); }, toggleStyle(){ restyleOn=!restyleOn; setModel(currentModelIdx); return restyleOn; },
+  modelInfo(){ const m=MODELS[currentModelIdx]; let meshes=0,tris=0; craftHolder.traverse(o=>{ if(o.isMesh){ meshes++; const g=o.geometry; if(g&&g.index) tris+=g.index.count/3; else if(g&&g.attributes.position) tris+=g.attributes.position.count/3; } }); return {idx:currentModelIdx, name:m.name, license:m.license, restyle:restyleOn, meshes, tris:Math.round(tris)}; },
   varioGainNow(){ return varioGain?+varioGain.gain.value.toFixed(4):-1; },
   camUpWorldY(){ return +(new THREE.Vector3(0,1,0).applyQuaternion(camera.quaternion).y).toFixed(3); },
   camDist(){ return +camera.position.distanceTo(gliderGroup.position).toFixed(1); },
