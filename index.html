@@ -17,6 +17,12 @@
   #i-hdg{ top:14px; left:50%; transform:translateX(-50%); }
   #i-asi{ left:26px; top:50%; transform:translateY(-50%); }
   #i-alt{ right:22px; top:50%; transform:translateY(-50%); }
+  #i-desc{ right:22px; top:50%; transform:translateY(-50%); }
+  .dpanel{ background:rgba(8,11,16,.42); border:1px solid rgba(223,230,236,.25); border-radius:4px; padding:9px 12px; font-family:ui-monospace,monospace; min-width:122px; }
+  .drow{ display:flex; align-items:baseline; gap:7px; margin:4px 0; }
+  .dlbl{ font-size:10px; letter-spacing:1px; color:#94a0ac; flex:1; text-transform:uppercase; }
+  .dval{ font-size:18px; font-weight:600; color:#eef2f6; }
+  .dun{ font-size:11px; color:#94a0ac; }
   #i-vario{ right:108px; top:50%; transform:translateY(-50%); }
   #i-wind{ left:24px; bottom:22px; }
   /* instrument visibility is JS-driven (applyInstruments) from the settings toggles/presets */
@@ -135,6 +141,11 @@
   <div id="i-hdg" class="inst-wrap"></div>
   <div id="i-asi" class="inst-wrap"></div>
   <div id="i-alt" class="inst-wrap"></div>
+  <div id="i-desc" class="inst-wrap" style="display:none"><div class="dpanel">
+    <div class="drow"><span class="dlbl">AGL</span><span id="d-agl" class="dval">0</span><span class="dun">m</span></div>
+    <div class="drow"><span class="dlbl">глубина</span><span id="d-depth" class="dval">0</span><span class="dun">m</span></div>
+    <div class="drow"><span class="dlbl">очки</span><span id="d-score" class="dval">0</span></div>
+  </div></div>
   <div id="i-vario" class="inst-wrap"></div>
   <div id="i-wind" class="inst-wrap"></div>
   <div id="i-baro" class="inst-wrap"></div>
@@ -162,6 +173,7 @@
     <div class="title">swooper</div>
     <div class="ver" id="ver">v0.20</div>
     <button class="play" id="play">START</button>
+    <div class="seedrow" style="margin-top:16px;"><span>режим</span><span class="seg" id="mode-seg"><button data-m="0">парение</button><button data-m="1">спуск</button></span></div>
     <div style="margin-top:12px;"><button class="play ghost" id="menu-guide" style="font-size:13px;padding:8px 26px;letter-spacing:2px;">Гайд по полётам</button></div>
     <div class="seedrow subtle">сид <input id="seedin" inputmode="numeric" spellcheck="false"><button id="seedgo" title="новый мир">⟳</button></div>
   </div>
@@ -208,7 +220,7 @@
 
 <div class="overlay hidden" id="crash">
   <div>
-    <div class="title" style="font-size:44px;letter-spacing:6px;color:#ff6a52;">разбился</div>
+    <div class="title" id="crashtitle" style="font-size:44px;letter-spacing:6px;color:#ff6a52;">разбился</div>
     <div class="ver" id="crashsub">столкновение с рельефом</div>
     <div class="setbtns">
       <button class="play" id="crash-restart">Заново</button>
@@ -279,7 +291,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.80';
+const VERSION = '0.81';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -448,6 +460,9 @@ function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a
 // orographic ridge lift on windward faces + thermal columns. Watch the vario.
 const PEAK_H=6200, TFF_BASE=0.000085, T_OCT=5, RIDGE_SHARP=2.1, T_WARP=950;
 const CHUNK=3000, GRID=7, HALF=(GRID-1)/2, SEG=32;
+const DESCENT = prefB('descent', false);            // 2nd world: endless dive down a slope (picked in the menu, applied on reload)
+const DESC_GRADE=0.85, DESC_RELIEF=0.34;            // steep downslope (~5x glide angle) + tamed relief to skim/weave
+let descDepth=0, descScore=0, descBest=prefN('descbest',0);
 function hash2(ix,iz){ let h=Math.imul(ix|0,374761393)^Math.imul(iz|0,668265263); h=Math.imul(h^(h>>>13),1274126177); return ((h^(h>>>16))>>>0)/4294967296; }
 function vnoise(x,z){ const x0=Math.floor(x),z0=Math.floor(z),fx=x-x0,fz=z-z0;
   const sx=fx*fx*(3-2*fx),sz=fz*fz*(3-2*fz);
@@ -458,7 +473,8 @@ function ridgedFbm(x,z){ let amp=1,freq=1,sum=0,norm=0;
   return sum/norm; }
 function terrainHeight(x,z){
   const wx=x+T_WARP*Math.sin(z*0.00006+1.7), wz=z+T_WARP*Math.sin(x*0.00005+0.4);   // domain warp
-  return ridgedFbm(wx*TFF_BASE+5.0+WORLD_OX, wz*TFF_BASE+2.0+WORLD_OZ)*PEAK_H - 1100;   // +seed world offset
+  const h=ridgedFbm(wx*TFF_BASE+5.0+WORLD_OX, wz*TFF_BASE+2.0+WORLD_OZ)*PEAK_H - 1100;   // +seed world offset
+  return DESCENT ? h*DESC_RELIEF + DESC_GRADE*z : h;   // descent world: tamed relief on an endless downslope (fly -z = downhill forever)
 }
 // ---- wind field: orographic ridge lift + thermals -> you can SOAR ----
 // NON-UNIFORM wind: a slow large-scale drift of direction & strength over km,
@@ -491,11 +507,13 @@ function solarLift(x,z,gx,gz,t){
   return THERM_DN*e*thermalScale;                  // shadow / back-facing -> mild sink (e<0)
 }
 // thermal SOURCE strength 0..1 over the ground (for cloud placement / radar hints) — same solar drive
-function thermalSource(x,z){ const d=60, gx=(terrainHeight(x+d,z)-terrainHeight(x-d,z))/(2*d), gz=(terrainHeight(x,z+d)-terrainHeight(x,z-d))/(2*d);
+function thermalSource(x,z){ if(DESCENT) return 0;   // no thermal cumulus in the descent world (ambient puffs only)
+  const d=60, gx=(terrainHeight(x+d,z)-terrainHeight(x-d,z))/(2*d), gz=(terrainHeight(x,z+d)-terrainHeight(x,z-d))/(2*d);
   const e=solarHeat(gx,gz)-THERM_NEUTRAL; if(e<=0) return 0;
   return clamp(e*(0.55+0.45*vnoise(x*THFF2+5.0,z*THFF2+9.0))*2.4,0,1); }
 const _wbLift=new THREE.Vector3();
 function windLift(x,y,z,t){
+  if(DESCENT) return 0;                               // descent world: still air, no thermals/ridge lift — pure glide down
   const ag=Math.max(0, y-terrainHeight(x,z)), d=45;
   const gx=(terrainHeight(x+d,z)-terrainHeight(x-d,z))/(2*d), gz=(terrainHeight(x,z+d)-terrainHeight(x,z-d))/(2*d);
   windBaseAt(x,z,t,_wbLift);
@@ -904,6 +922,9 @@ function clearanceNow(){                          // min terrain clearance under
 }
 function crash(){ if(state!=='flying') return; state='crashed'; silenceAudio(); dragging=false;
   document.getElementById('vign').style.opacity=0; nearMiss=0;
+  if(DESCENT){ if(descScore>descBest){ descBest=Math.round(descScore); prefSet('descbest',descBest); }
+    document.getElementById('crashtitle').textContent='конец забега';
+    document.getElementById('crashsub').textContent='глубина '+Math.round(descDepth)+'м · очки '+Math.round(descScore)+' · рекорд '+descBest; }
   crashEl.classList.remove('hidden'); }
 
 /* ===================== INPUT (keyboard) ===================== */
@@ -1020,14 +1041,18 @@ function closeGuide(){ guideEl.classList.add('hidden'); guideOpen=false; if(guid
 document.getElementById('guide-close').onclick=closeGuide;
 document.querySelectorAll('#guide .gtabs button').forEach(b=>{ b.onclick=()=>showGTab(b.dataset.g); });
 document.getElementById('menu-guide').onclick=openGuide;
+// menu: world-mode selector (Парение / Спуск) — applied on reload, like the seed
+{ const seg=document.getElementById('mode-seg'); if(seg){ Array.from(seg.children).forEach(btn=>btn.classList.toggle('on', (btn.dataset.m==='1')===DESCENT));
+  seg.querySelectorAll('button').forEach(btn=>{ btn.onclick=()=>{ prefSet('descent', btn.dataset.m==='1'?'1':'0'); location.href=location.pathname; }; }); } }
 document.getElementById('set-guide').onclick=openGuide;
 
 function startFlight(){
   initAudio();
   if(musicOn && music.paused) music.play().catch(()=>{});   // first play needs this user gesture
-  glider.pos.set(0, Math.max(terrainHeight(0,0)+1300, 2700), 0);   // airborne over the range
-  spawnY=glider.pos.y;                                  // ALT readout = climb/descent from start
-  const m=new THREE.Matrix4().lookAt(ZERO, new THREE.Vector3(0,-0.10,-1).normalize(), WORLD_UP);
+  const g0=terrainHeight(0,0);
+  glider.pos.set(0, DESCENT ? g0+650 : Math.max(g0+1300, 2700), 0);   // descent: start ~650 above the slope, ready to dive
+  spawnY=glider.pos.y;                                  // depth = how far below spawn you've descended
+  const m=new THREE.Matrix4().lookAt(ZERO, new THREE.Vector3(0, DESCENT?-0.5:-0.10, -1).normalize(), WORLD_UP);   // descent starts nosed down
   glider.q.setFromRotationMatrix(m);
   const f0=new THREE.Vector3(0,0,-1).applyQuaternion(glider.q);
   glider.vel.copy(f0).multiplyScalar(INIT_SPEED);
@@ -1036,7 +1061,7 @@ function startFlight(){
   rawH=rawV=horizontalInput=verticalInput=0;
   prevPos.copy(glider.pos); prevQ.copy(glider.q);
   updateTerrain(); cloudCX=null; updateClouds();
-  brake=0; nearMiss=0; camOrbitAz=0; camOrbitEl=0; camIdle=0; dragging=false; camBase.set(NaN,0,0); resetInst();
+  brake=0; nearMiss=0; descScore=0; descDepth=0; camOrbitAz=0; camOrbitEl=0; camIdle=0; dragging=false; camBase.set(NaN,0,0); resetInst();
   seedTrail(trailR,1,glider.pos,glider.q); seedTrail(trailL,-1,glider.pos,glider.q);
   previewMode=false;
   state='flying'; menuEl.classList.add('hidden'); pauseChip.classList.add('hidden'); settingsEl.classList.add('hidden'); crashEl.classList.add('hidden');
@@ -1157,7 +1182,7 @@ function fixedStep(){
   if (wl>1e-6){ _dq.setFromAxisAngle(_axis.copy(glider.angVel).multiplyScalar(1/wl), wl*FIXED); glider.q.premultiply(_dq); glider.q.normalize(); }
 
   // terrain collision (G2): crash on contact. Skipped in headless sim (inputOverride set) and when toggled off.
-  if(crashOn && !inputOverride && glider.pos.y <= terrainHeight(glider.pos.x,glider.pos.z)+1.5) crash();
+  if((crashOn||DESCENT) && !inputOverride && glider.pos.y <= terrainHeight(glider.pos.x,glider.pos.z)+1.5) crash();   // descent always crashes (it's the risk)
 }
 
 /* ===================== CAMERA (chase, never inverts) ===================== */
@@ -1418,6 +1443,11 @@ const showInstr={ i_wind:prefB('i_wind',true), i_map:prefB('i_map',true), i_baro
 const INSTR_EL={ i_wind:'i-wind', i_map:'i-map', i_baro:'i-baro', i_g:'i-g', i_slip:'i-slip', i_mc:'i-mc', i_fps:'fps' };
 function applyInstruments(){ for(const k in INSTR_EL){ const el=document.getElementById(INSTR_EL[k]); if(el) el.style.display=showInstr[k]?'':'none'; } }
 applyInstruments();
+// descent world: hide the lift-radar + MSL altimeter, show the AGL/depth/score panel instead
+const dAgl=document.getElementById('d-agl'), dDepth=document.getElementById('d-depth'), dScore=document.getElementById('d-score');
+if(DESCENT){ showInstr.i_map=false; applyInstruments();
+  const al=document.getElementById('i-alt'); if(al) al.style.display='none';
+  const dd=document.getElementById('i-desc'); if(dd) dd.style.display='block'; }
 
 function updateHUD(dt){
   const dts=dt||FIXED, air0=glider.airspeed;
@@ -1426,6 +1456,11 @@ function updateHUD(dt){
   const agl=(glider.pos.y-terrainHeight(glider.pos.x,glider.pos.z))*MPS, ac=aglColor(agl);   // height above ground (swoop cue)
   alti.val.setAttribute('fill', ac||'#fff'); alti.box.setAttribute('stroke', ac||C_AMBER);
   aglText.textContent='AGL '+Math.max(0,Math.round(agl)); aglText.setAttribute('fill', ac||C_CREAM);
+  if(DESCENT){                                        // proximity (close+fast) -> score; depth = how far below spawn
+    const clr=clearanceNow(), prox=clamp(1-clr/55,0,1), spd=clamp((glider.gndspeed-90)/200,0,1);
+    descScore += prox*spd*dts*120; descDepth=(spawnY-glider.pos.y)*MPS;
+    if(dAgl){ dAgl.textContent=Math.max(0,Math.round(agl)); dAgl.style.color=ac||'#eef2f6';
+      dDepth.textContent=Math.max(0,Math.round(descDepth)); dScore.textContent=Math.round(descScore); } }
   if(showInstr.i_wind) updWind(hdg);
   const TE=glider.pos.y+(air0*air0)/(2*G), teRate=(TE-prevTE)/dts; prevTE=TE;     // total-energy vario (part of the core vario)
   teVarioS += ((teRate*MPS)-teVarioS)*clamp(dts*4,0,1); updTEVario(teVarioS);
