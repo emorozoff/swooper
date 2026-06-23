@@ -284,7 +284,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.76';
+const VERSION = '0.77';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -873,7 +873,7 @@ function updateBrakeFX(dt){
 /* ===================== WINGTIP VORTEX TRAILS (C3 — ribbon from the tips, toggle) =====================
    Camera-facing ribbon from each wingtip. Profile along the trail: thin & faint where it leaves the
    tip, widening & strengthening downstream, then fading at the far tail. Attaches to the bowing tip. */
-let trailsOn=prefB('trails',true);   // wingtip vortex ribbon — faint running dashes (chosen style)
+let trailsOn=prefB('trails',true);   // wingtip vortex ribbon — twin-helix spiral (chosen style)
 const TRAIL_N=46, HALF_SPAN=CLASSIC.span/2;
 const trW=new Float32Array(TRAIL_N), trA=new Float32Array(TRAIL_N);   // static width/alpha vs position
 for(let i=0;i<TRAIL_N;i++){ const u=(TRAIL_N-1-i)/(TRAIL_N-1);        // u: 0 at tip (newest) -> 1 at oldest
@@ -906,9 +906,11 @@ function rebuildRibbon(tr){
     if(_tan.lengthSq()<1e-8) _tan.copy(_fb); else { _tan.normalize(); _fb.copy(_tan); }
     _vd.set(cam.x-c[o], cam.y-c[o+1], cam.z-c[o+2]);
     _sd.crossVectors(_tan,_vd); if(_sd.lengthSq()<1e-8) _sd.set(1,0,0); else _sd.normalize();
-    const w=trW[i];
-    v[a]=c[o]+_sd.x*w;   v[a+1]=c[o+1]+_sd.y*w; v[a+2]=c[o+2]+_sd.z*w;
-    v[a+3]=c[o]-_sd.x*w; v[a+4]=c[o+1]-_sd.y*w; v[a+5]=c[o+2]-_sd.z*w;
+    _uph.crossVectors(_tan,_sd);                                   // up = perpendicular to tangent & side
+    const w=trW[i], ph=i*0.85+t*2.5, cw=Math.cos(ph)*w*1.5, sw=Math.sin(ph)*w*1.5;   // two strands spiral around the core
+    const ox=_sd.x*cw+_uph.x*sw, oy=_sd.y*cw+_uph.y*sw, oz=_sd.z*cw+_uph.z*sw;
+    v[a]=c[o]+ox;   v[a+1]=c[o+1]+oy; v[a+2]=c[o+2]+oz;
+    v[a+3]=c[o]-ox; v[a+4]=c[o+1]-oy; v[a+5]=c[o+2]-oz;
   }
   tr.geo.attributes.position.needsUpdate=true;
 }
@@ -916,15 +918,11 @@ function seedTrail(tr,sign,rp,rq){ wingTipLocal(sign,_tip).applyQuaternion(rq).a
   for(let i=0;i<TRAIL_N;i++){ tr.cpos[i*3]=_tip.x; tr.cpos[i*3+1]=_tip.y; tr.cpos[i*3+2]=_tip.z; } rebuildRibbon(tr); }
 function updateTrails(rp,rq,dt){
   const g=Math.abs(glider.gload), emit=trailsOn && g>1.2;
-  const op = emit ? clamp((g-1.2)*0.4,0,0.5) : 0;                 // faint/transparent dashed vortex ribbon
-  const t=simTime*6.5;
+  const op = emit ? clamp((g-1.2)*0.5,0,0.7) : 0;                 // twin-helix vortex strands (appear under G)
   for(const [tr,sign] of [[trailR,1],[trailL,-1]]){
     wingTipLocal(sign,_tip).applyQuaternion(rq).add(rp);
     tr.cpos.copyWithin(0,3); const n=tr.cpos.length; tr.cpos[n-3]=_tip.x; tr.cpos[n-2]=_tip.y; tr.cpos[n-1]=_tip.z;
     tr.mat.uniforms.uOpacity.value=op; rebuildRibbon(tr);
-    const va=tr.geo.attributes.aAlpha.array;                      // running dashes
-    for(let i=0;i<TRAIL_N;i++){ const u=(TRAIL_N-1-i)/(TRAIL_N-1); const d=smoothstep01(0.35,0.6,0.5+0.5*Math.sin(u*40-t)); va[i*2]=va[i*2+1]=trA[i]*d; }
-    tr.geo.attributes.aAlpha.needsUpdate=true;
   }
 }
 
