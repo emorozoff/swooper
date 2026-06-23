@@ -74,12 +74,6 @@
   .setrow input{ width:15px; height:15px; accent-color:#e8b04b; cursor:pointer; }
   .setrange{ gap:10px; }
   .setrange input[type=range]{ width:118px; accent-color:#e8b04b; cursor:pointer; }
-  /* thermals slider: amber normal range, RED arcade zone (from ~41% = scale 1.4) */
-  #set-therm{ -webkit-appearance:none; appearance:none; height:6px; border-radius:3px; background:
-    linear-gradient(to right, rgba(232,176,75,.55) 0%, rgba(232,176,75,.55) 41%, rgba(217,83,79,.9) 41%, rgba(217,83,79,.9) 100%); }
-  #set-therm::-webkit-slider-thumb{ -webkit-appearance:none; appearance:none; width:14px; height:14px; border-radius:50%;
-    background:#fff; border:1px solid rgba(0,0,0,.35); cursor:pointer; }
-  #set-therm::-moz-range-thumb{ width:13px; height:13px; border-radius:50%; background:#fff; border:1px solid rgba(0,0,0,.35); cursor:pointer; }
   .setrange .rngend{ opacity:.55; font-size:11px; }
   .seg{ display:inline-flex; gap:4px; }
   .seg button{ font:inherit; font-size:11px; letter-spacing:1px; padding:3px 9px; border-radius:3px; cursor:pointer;
@@ -152,7 +146,7 @@
       <label class="setrow"><input type="checkbox" id="set-trails"> следы за крыльями</label>
       <label class="setrow"><input type="checkbox" id="set-fx"> свист у рельефа</label>
       <div class="setrow setrange"><span>музыка</span><input type="range" id="set-musicvol" min="0" max="1" step="0.02"><span class="rngend">громче</span></div>
-      <div class="setrow setrange"><span>термики</span><input type="range" id="set-therm" min="0.3" max="3.0" step="0.05"><span class="rngend">аркада →</span></div>
+      <div class="setrow setrange"><span>термики</span><input type="range" id="set-therm" min="0.3" max="1.8" step="0.05"><span class="rngend">сильнее</span></div>
       <div class="setrow setseg"><span>графика</span><span class="seg" id="set-gfx"><button data-q="0">низк</button><button data-q="1">сред</button><button data-q="2">выс</button></span></div>
     </div>
     <div class="sethint">Esc — продолжить · P — пауза · Space — тормоза · R — рестарт</div>
@@ -183,7 +177,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.68';
+const VERSION = '0.69';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -383,9 +377,6 @@ function windBaseAt(x,z,t,out){
 // thermals: static source strength 0..1 (smoothstep core -> wider & catchable)
 // + gentle time wobble. Drives lift, GROUND TINT and CLOUD placement alike.
 const RIDGE_GAIN=0.6, RIDGE_H=2400, THERMAL_GAIN=52, THERMAL_H=8000, THFF=0.00015, THERMAL_THRESH=0.30;   // THFF lower -> bigger thermal zones
-// arcade buoyancy: updraft beyond AERO_LIFT_CAP (kept stall-safe in the aero) carries the glider straight up.
-// Only kicks in in the slider's RED ZONE (strong thermals); normal range stays pure realistic aero (buoy=0).
-const AERO_LIFT_CAP=28, BUOY_THRESH=34, BUOY_K=0.14;
 // thermals slider (weak<->strong): scales BOTH the lift (thermGain) and zone size/frequency (lower threshold = bigger, more zones)
 let thermalScale=clamp(prefN('therm',1),0.3,1.8);
 let thermThresh=clamp(THERMAL_THRESH-(thermalScale-1)*0.18, 0.08, 0.55), thermGain=THERMAL_GAIN*thermalScale;
@@ -404,7 +395,7 @@ function windLift(x,y,z,t){
   windBaseAt(x,z,t,_wbLift);
   const oro=RIDGE_GAIN*(_wbLift.x*gx+_wbLift.z*gz)*Math.exp(-ag/RIDGE_H);  // wind into a windward face -> updraft (lee -> sink)
   const th =thermGain*thermalAt(x,z,t)*Math.exp(-ag/THERMAL_H);            // rising thermal columns (slider-scaled)
-  return Math.max(oro+th, -26);   // no upper cap (red-zone arcade thermals can be huge); sink floored at -26
+  return clamp(oro+th, -26, 28);   // gentle enough to add lift, not spike AoA into a stall — you can always dive out
 }
 // B5 TERRAIN-STEERED WIND: venturi speed-up over windward faces/cols, lee stall, slope deflection,
 // layered on the windBaseAt drift via the SAME terrain gradient windLift uses. Hard-clamped (AoA-safe).
@@ -498,7 +489,7 @@ function updateTerrain(){
 }
 // thermals slider: rescale lift + zone size, then force chunks (re-tint) & clouds to rebuild
 function setThermals(scale){
-  thermalScale=clamp(scale,0.3,3.0);
+  thermalScale=clamp(scale,0.3,1.8);
   thermThresh=clamp(THERMAL_THRESH-(thermalScale-1)*0.18, 0.08, 0.55); thermGain=THERMAL_GAIN*thermalScale;
   prefSet('therm', thermalScale);
   for(const ch of chunks){ ch.cx=null; ch.cz=null; } cloudCX=null;     // rebuild on next updateTerrain/updateClouds
@@ -928,8 +919,7 @@ function fixedStep(){
                 GUST_AMP*0.5*(Math.sin(t*0.61+0.8)+0.5*Math.sin(t*1.23+2.1)) + sq*0.45*Math.sin(t*0.8),
     _wbStep.z + GUST_AMP*(Math.sin(t*0.43+2.1)+0.6*Math.sin(t*1.07+0.5)) + sq*Math.sin(sqA)
   );
-  const liftRaw=windLift(glider.pos.x, glider.pos.y, glider.pos.z, t);   // ridge lift + thermals (soaring)
-  _wind.y += clamp(liftRaw, -26, AERO_LIFT_CAP);                          // aero/AoA always stall-safe (realistic)
+  _wind.y += windLift(glider.pos.x, glider.pos.y, glider.pos.z, t);   // ridge lift + thermals (soaring), capped & stall-safe
   _vair.copy(glider.vel).sub(_wind);
   const V=_vair.length();
   glider.airspeed=V; glider.gndspeed=glider.vel.length();
@@ -984,9 +974,6 @@ function fixedStep(){
 
   // ----- integrate -----
   glider.vel.addScaledVector(_F, FIXED/MASS);
-  // arcade buoyancy: updraft beyond the aero cap carries the glider straight up (no AoA stall) — red-zone thermals
-  const buoy=liftRaw-BUOY_THRESH;
-  if(buoy>0 && glider.vel.y<buoy) glider.vel.y += (buoy-glider.vel.y)*BUOY_K;
   glider.pos.addScaledVector(glider.vel, FIXED);
   let wl=glider.angVel.length();
   if (wl>MAXW){ glider.angVel.multiplyScalar(MAXW/wl); wl=MAXW; }
