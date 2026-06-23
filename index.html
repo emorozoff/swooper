@@ -125,10 +125,6 @@
     font-family:ui-monospace,monospace; font-size:12px; letter-spacing:1px; color:#dfe6ec;
     background:rgba(10,13,17,.5); border:1px solid rgba(223,230,236,.3); border-radius:20px; padding:6px 16px; transition:opacity .6s; }
   #guidehint.hidden{ opacity:0; }
-  #trailpick{ position:fixed; bottom:152px; left:50%; transform:translateX(-50%); z-index:6; pointer-events:none;
-    font-family:ui-monospace,monospace; font-size:12px; letter-spacing:1px; color:#dfe6ec;
-    background:rgba(10,13,17,.5); border:1px solid rgba(223,230,236,.3); border-radius:20px; padding:6px 16px; transition:opacity .4s; }
-  #trailpick.hidden{ opacity:0; }
   #loaderr{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; text-align:center; padding:30px; z-index:50; }
 </style>
 </head>
@@ -270,7 +266,6 @@
   </div>
 </div>
 <div id="guidehint" class="hidden">H — гайд по полётам</div>
-<div id="trailpick" class="hidden"></div>
 <div id="loaderr"></div>
 
 <script type="importmap">
@@ -284,7 +279,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.77';
+const VERSION = '0.78';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -727,10 +722,6 @@ function buildFlexGlider(){
   elevPiv.position.set(0,p.finH,tailZ-0.2+0.45); g.add(elevPiv); flex.elev=elevPiv;
   const rudPiv=new THREE.Group(); rudPiv.add(new THREE.Mesh(new THREE.BoxGeometry(0.12,p.finH*0.86,0.66).translate(0,0,0.33),cAcc));
   rudPiv.position.set(0,p.finH/2,tailZ-0.2+0.75); g.add(rudPiv); flex.rudder=rudPiv;
-  // jet exhaust flame at the tail boom (additive cone; shows/scales on Shift boost)
-  const jetGeo=new THREE.ConeGeometry(0.42,2.4,12); jetGeo.translate(0,1.2,0);   // base at origin -> grows aft when scaled
-  const jetMesh=new THREE.Mesh(jetGeo, new THREE.MeshBasicMaterial({color:0xffb060,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false,fog:false}));
-  jetMesh.rotation.x=-Math.PI/2; jetMesh.position.set(0,0.02,1.0+boomLen); jetMesh.visible=false; g.add(jetMesh); flex.jet=jetMesh;
   // wing half: a single group hinged at the root (x=0); rotation.z bows the whole panel up under load
   function wing(sign){
     const grp=new THREE.Group(), iL=half*0.5, oL=half*0.5;
@@ -756,11 +747,8 @@ function buildFlexGlider(){
 }
 craftHolder.add(buildFlexGlider());
 
-// ===================== JET EXHAUST STYLES (Shift boost) — 5 switchable looks (keys 1–5) =====================
-let jetMode=clamp(Math.round(prefN('jetmode',1)),1,5);
-const JET_NAMES={1:'ровный факел',2:'афтербёрнер',3:'искры',4:'шок-диаманты',5:'турбулентный шлейф'};
+// ===================== JET EXHAUST (Shift boost) — sparks shooting aft from the nozzle (chosen style) =====================
 const JET_Z=1.0+CLASSIC.boomLen;                      // nozzle z (local)
-// style 3 — sparks: local-space additive points shooting aft from the nozzle
 const JSP_N=70, jspPos=new Float32Array(JSP_N*3), jspVel=new Float32Array(JSP_N*3), jspLife=new Float32Array(JSP_N), jspAlf=new Float32Array(JSP_N);
 for(let i=0;i<JSP_N;i++) jspLife[i]=2;
 const jspGeo=new THREE.BufferGeometry(); jspGeo.setAttribute('position',new THREE.BufferAttribute(jspPos,3)); jspGeo.setAttribute('aLife',new THREE.BufferAttribute(jspAlf,1));
@@ -773,25 +761,14 @@ let _jspHead=0;
 function spawnSpark(){ const i=_jspHead; _jspHead=(_jspHead+1)%JSP_N; const o=i*3;
   jspPos[o]=(Math.random()-0.5)*0.4; jspPos[o+1]=0.02+(Math.random()-0.5)*0.3; jspPos[o+2]=JET_Z+0.2;
   jspVel[o]=(Math.random()-0.5)*4; jspVel[o+1]=(Math.random()-0.5)*4; jspVel[o+2]=18+Math.random()*16; jspLife[i]=0; }
-// style 4 — shock diamonds: a few bright additive blobs spaced along the exhaust
-const jetDiamonds=[]; for(let k=0;k<4;k++){
-  const s=new THREE.Mesh(new THREE.SphereGeometry(0.34-k*0.05,10,8), new THREE.MeshBasicMaterial({color:0xfff0d0,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false,fog:false}));
-  s.position.set(0,0.02,JET_Z+0.5+k*0.85); s.scale.set(1,1,1.6); s.visible=false; gliderGroup.add(s); jetDiamonds.push(s); }
 function updateJetFX(dt){
-  const on=boostS>0.02;
-  const sparkOn=on && jetMode===3;
+  const sparkOn=boostS>0.02;
   jspMat.uniforms.uOpacity.value=sparkOn?0.9*boostS:0; jspMesh.visible=jspMat.uniforms.uOpacity.value>0.001;
   if(sparkOn) for(let k=0;k<3;k++) spawnSpark();
   for(let i=0;i<JSP_N;i++){ if(jspLife[i]>=1){ jspAlf[i]=1; continue; } const o=i*3;
     jspPos[o]+=jspVel[o]*dt; jspPos[o+1]+=jspVel[o+1]*dt; jspPos[o+2]+=jspVel[o+2]*dt; jspLife[i]+=dt*3.2; jspAlf[i]=clamp(jspLife[i],0,1); }
   jspGeo.attributes.position.needsUpdate=true; jspGeo.attributes.aLife.needsUpdate=true;
-  const diaOn=on && jetMode===4;
-  for(let k=0;k<jetDiamonds.length;k++){ const s=jetDiamonds[k]; s.visible=diaOn;
-    if(diaOn){ const pulse=0.6+0.4*Math.sin(simTime*16-k*1.1); s.material.opacity=boostS*pulse*0.8; const sc=(0.7+0.3*pulse)*boostS; s.scale.set(sc,sc,sc*1.7); } }
 }
-function setJetMode(m){ jetMode=clamp(Math.round(m),1,5); prefSet('jetmode',jetMode);
-  const el=document.getElementById('trailpick'); if(el){ el.textContent='Двигатель '+jetMode+'/5 · '+JET_NAMES[jetMode]; el.classList.remove('hidden');
-    clearTimeout(setJetMode._t); setJetMode._t=setTimeout(()=>el.classList.add('hidden'),2600); } }
 
 // load-driven wing-bow spring: bends UP eagerly (light damping), eases DOWN over-damped; substepped -> stable
 const FX={ K:13, ZUP:0.5, ZDN:1.0, BEND_G:0.024, BEND_MIN:-0.035, BEND_MAX:0.09 };   // stiffer wings (~half the bow)
@@ -815,18 +792,8 @@ function updateFlex(dt){
   if(flex.ailR){ flex.ailR.rotation.x=0.5*flex.sAil; flex.ailL.rotation.x=-0.5*flex.sAil; }   // ailerons antisymmetric (roll into the bank)
   if(flex.elev)   flex.elev.rotation.x=-0.42*flex.sElev;                                       // elevator (pitch — TE up = nose up)
   if(flex.rudder) flex.rudder.rotation.y=0.5*flex.sRud;                                        // rudder (yaw — TE toward the turn)
-  // jet boost exhaust (Shift) — 5 styles (1 steady · 2 afterburner · 3 sparks · 4 diamonds · 5 turbulent)
+  // jet boost exhaust (Shift) — sparks from the nozzle
   boostS += ((boosting?1:0)-boostS)*clamp(dt*8,0,1);
-  if(flex.jet){ const m=jetMode, coneOn=boostS>0.02 && m!==3; flex.jet.visible=coneOn; let off=0;
-    if(coneOn){ const tt=simTime; let lenK=1.8, wK=0.5, op=0.85;
-      if(m===2){ const pl=0.55+0.45*Math.sin(tt*22); lenK=1.4+1.6*pl; op=0.5+0.5*pl; }
-      else if(m===4){ lenK=1.1; wK=0.32; op=0.6; }                                   // thin core for the shock diamonds
-      else if(m===5){ lenK=1.2+1.6*Math.abs(0.6+0.5*Math.sin(tt*60)+0.2*Math.sin(tt*123)); op=0.65+0.3*Math.sin(tt*52); off=Math.sin(tt*38)*0.12*boostS; }
-      else { lenK=1.8*(0.85+0.25*Math.sin(tt*45)); }                                 // 1 steady, gentle flicker
-      flex.jet.material.opacity=boostS*op;
-      flex.jet.scale.set(0.7+boostS*wK, 0.7+boostS*wK, 0.5+boostS*lenK); }
-    flex.jet.position.x=off;
-  }
   updateJetFX(dt);
 }
 
@@ -953,7 +920,6 @@ addEventListener('keydown',e=>{ if(e.target&&e.target.tagName==='INPUT') return;
   if(e.code==='KeyR'){ if(state!=='menu') startFlight(); }
   else if(e.code==='KeyM'){ setAudioOn(!audioOn); }
   else if(e.code==='KeyH'){ openGuide(); }
-  else if(e.code==='Digit1'||e.code==='Digit2'||e.code==='Digit3'||e.code==='Digit4'||e.code==='Digit5'){ setJetMode(+e.code.slice(5)); }   // pick jet-exhaust style (visible on Shift boost)
   else if(e.code==='Escape'){ if(state==='flying'||state==='paused') openSettings(); else if(state==='settings') resumeFlight(); }
   else if(e.code==='KeyP'){ if(state==='flying') pauseFreeze(); else if(state==='paused') resumeFlight(); }   // P: freeze-pause toggle
   else if(e.code==='Space'){ if(state==='menu'||state==='crashed') startFlight(); } });                       // Space held = airbrakes in flight
@@ -1644,8 +1610,8 @@ window.__swooper={
   cloudCount(){ let n=0; for(let i=0;i<cloudSize.array.length;i++) if(cloudSize.array[i]>0) n++; return n; },
   flexState(){ return {bend:+flex.bend.toFixed(4), wingR:+flex.wingR.rotation.z.toFixed(3), wingL:+flex.wingL.rotation.z.toFixed(3)}; },
   surf(){ return { ail:+(flex.ailR?flex.ailR.rotation.x:0).toFixed(3), elev:+(flex.elev?flex.elev.rotation.x:0).toFixed(3), rud:+(flex.rudder?flex.rudder.rotation.y:0).toFixed(3) }; },
-  boostState(){ return { on:boosting, s:+boostS.toFixed(2), jetVis:flex.jet?flex.jet.visible:false }; },
-  jetMode(){ return jetMode; }, setJetMode(m){ setJetMode(m); }, jetFx(){ return { cone:flex.jet?flex.jet.visible:false, sparks:jspMesh.visible, dia0:jetDiamonds[0]?jetDiamonds[0].visible:false }; },
+  boostState(){ return { on:boosting, s:+boostS.toFixed(2), jetVis:jspMesh.visible }; },
+  jetFx(){ return { sparks:jspMesh.visible }; },
   preview(dist=16,az=0.7,el=0.34,g=null){ if(g!=null) glider.gload=g; previewMode=true; gliderGroup.position.set(0,0,0); gliderGroup.quaternion.identity();
     camera.position.set(Math.sin(az)*Math.cos(el)*dist, Math.sin(el)*dist, Math.cos(az)*Math.cos(el)*dist); camera.lookAt(0,0.4,0); },
   varioGainNow(){ return varioGain?+varioGain.gain.value.toFixed(4):-1; },
