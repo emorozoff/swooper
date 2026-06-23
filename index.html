@@ -177,7 +177,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.69';
+const VERSION = '0.70';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -1089,7 +1089,7 @@ function updVtape(T,value){
   }
   T.val.textContent=Math.round(value);
 }
-const asi=vtape('i-asi',{W:74,step:5,px:2.4,span:56,lab:20,unit:'m/s',bands:true,bandLo:25,bandMid:55,bandHi:80});   // red below 25 (stall) and above 80 (Vne)
+const asi=vtape('i-asi',{W:74,step:5,px:3.6,span:37,lab:20,unit:'m/s',bands:true,bandLo:25,bandMid:55,bandHi:80});   // stretched scale (10 m/s = 36px) for snappier needle; red below 25 (stall) and above 80 (Vne)
 const alti=vtape('i-alt',{W:80,step:50,px:0.16,span:950,lab:200,unit:'m'});
 
 // ---- variometer (scale + moving needle, fixed digital readout at the bottom) ----
