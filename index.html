@@ -174,7 +174,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.62';
+const VERSION = '0.63';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -200,7 +200,7 @@ const ALPHA_STALL = 0.36, ALPHA_BLEND = 0.045, ALPHA_TRIM = 0.045;
 // drag curve Cd(α). Energy rework (v0.26): low parasitic CD0 -> high top speed
 // (dives really accelerate) + floaty efficient glide; low induced CD_IND
 // (high-aspect wing) -> pulling/looping/turning keeps speed. Loops still tight.
-const CD0 = 0.030, CD_IND = 0.022, CD_STALL = 1.20;   // lowered 0.045->0.030: slipperier -> dives push past 300 (low-speed accel ~unchanged, drag is a small % of gravity there)
+const CD0 = 0.022, CD_IND = 0.022, CD_STALL = 1.20;   // slipperier still (0.045->0.030->0.022): raises terminal speed ~119->~140 m/s
 // lateral
 const CY_BETA = 2.0;
 
@@ -1081,11 +1081,11 @@ function updVtape(T,value){
     const maj=(((v%o.lab)+o.lab)%o.lab)===0;
     t.ln.setAttribute('x1',maj?T.tx1:T.tx1+6); t.ln.setAttribute('x2',T.tx2); t.ln.setAttribute('y1',y); t.ln.setAttribute('y2',y); t.ln.setAttribute('opacity',0.8);
     if(maj){ t.tx.textContent=v; t.tx.setAttribute('x',T.numX); t.tx.setAttribute('y',y+3.5); t.tx.setAttribute('opacity',0.92); } else t.tx.setAttribute('opacity',0);
-    if(t.bd){ const c=v>o.bandHi?'#d9534f':v>o.bandMid?'#e0b552':'#5aa35a'; t.bd.setAttribute('y',y-px*st/2); t.bd.setAttribute('height',px*st+1); t.bd.setAttribute('fill',c); t.bd.setAttribute('opacity',0.92); }
+    if(t.bd){ const c=(v<o.bandLo||v>o.bandHi)?'#d9534f':v>o.bandMid?'#e0b552':'#5aa35a'; t.bd.setAttribute('y',y-px*st/2); t.bd.setAttribute('height',px*st+1); t.bd.setAttribute('fill',c); t.bd.setAttribute('opacity',0.92); }
   }
   T.val.textContent=Math.round(value);
 }
-const asi=vtape('i-asi',{W:74,step:5,px:2.4,span:56,lab:20,unit:'m/s',bands:true,bandMid:55,bandHi:80});
+const asi=vtape('i-asi',{W:74,step:5,px:2.4,span:56,lab:20,unit:'m/s',bands:true,bandLo:25,bandMid:55,bandHi:80});   // red below 25 (stall) and above 80 (Vne)
 const alti=vtape('i-alt',{W:80,step:50,px:0.16,span:950,lab:200,unit:'m'});
 
 // ---- variometer (scale + moving needle, fixed digital readout at the bottom) ----
@@ -1182,7 +1182,8 @@ function updMC(airmassMS){ mcStf.textContent=Math.round(clamp(40+(MC_SETTING-air
 
 // ---- minimap: heading-up, thermal cores as dots ----
 const MAP=98, MAPC=MAP/2, MAP_RANGE=3000, MAP_DOTS=40;
-const mapSvg=E('svg',{viewBox:`0 0 ${MAP} ${MAP}`,width:MAP,height:MAP,class:'inst'},document.getElementById('i-map'));
+const mapSvg=E('svg',{viewBox:`0 -13 ${MAP} ${MAP+13}`,width:MAP,height:MAP+13,class:'inst'},document.getElementById('i-map'));
+E('text',{x:MAPC,y:-3,'text-anchor':'middle','font-size':9,fill:C_CREAM,opacity:0.85,'font-family':MONO},mapSvg).textContent='LIFT';   // thermals (soaring term)
 E('circle',{cx:MAPC,cy:MAPC,r:MAPC-1,fill:C_BG,stroke:C_CREAM,'stroke-width':1,'stroke-opacity':0.4},mapSvg);
 const mapDots=[]; for(let i=0;i<MAP_DOTS;i++) mapDots.push(E('circle',{r:2.4,fill:'#e2b15a',opacity:0},mapSvg));
 const mapN=E('text',{'text-anchor':'middle','font-size':9,fill:C_CREAM,opacity:0.85,'font-family':MONO},mapSvg); mapN.textContent='N';
