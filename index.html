@@ -284,7 +284,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.75';
+const VERSION = '0.76';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -756,8 +756,45 @@ function buildFlexGlider(){
 }
 craftHolder.add(buildFlexGlider());
 
+// ===================== JET EXHAUST STYLES (Shift boost) — 5 switchable looks (keys 1–5) =====================
+let jetMode=clamp(Math.round(prefN('jetmode',1)),1,5);
+const JET_NAMES={1:'ровный факел',2:'афтербёрнер',3:'искры',4:'шок-диаманты',5:'турбулентный шлейф'};
+const JET_Z=1.0+CLASSIC.boomLen;                      // nozzle z (local)
+// style 3 — sparks: local-space additive points shooting aft from the nozzle
+const JSP_N=70, jspPos=new Float32Array(JSP_N*3), jspVel=new Float32Array(JSP_N*3), jspLife=new Float32Array(JSP_N), jspAlf=new Float32Array(JSP_N);
+for(let i=0;i<JSP_N;i++) jspLife[i]=2;
+const jspGeo=new THREE.BufferGeometry(); jspGeo.setAttribute('position',new THREE.BufferAttribute(jspPos,3)); jspGeo.setAttribute('aLife',new THREE.BufferAttribute(jspAlf,1));
+const jspMat=new THREE.ShaderMaterial({ transparent:true, depthWrite:false, fog:false, blending:THREE.AdditiveBlending,
+  uniforms:{ uColor:{value:new THREE.Color(0xffc070)}, uOpacity:{value:0} },
+  vertexShader:`attribute float aLife; varying float vL; void main(){ vL=aLife; vec4 mv=modelViewMatrix*vec4(position,1.0); gl_PointSize=(2.0+5.0*(1.0-aLife))*(300.0/max(1.0,-mv.z)); gl_Position=projectionMatrix*mv; }`,
+  fragmentShader:`uniform vec3 uColor; uniform float uOpacity; varying float vL; void main(){ float d=length(gl_PointCoord-0.5); if(d>0.5) discard; gl_FragColor=vec4(uColor,(1.0-vL)*uOpacity*(1.0-d*2.0)); }`});
+const jspMesh=new THREE.Points(jspGeo,jspMat); jspMesh.frustumCulled=false; jspMesh.visible=false; gliderGroup.add(jspMesh);
+let _jspHead=0;
+function spawnSpark(){ const i=_jspHead; _jspHead=(_jspHead+1)%JSP_N; const o=i*3;
+  jspPos[o]=(Math.random()-0.5)*0.4; jspPos[o+1]=0.02+(Math.random()-0.5)*0.3; jspPos[o+2]=JET_Z+0.2;
+  jspVel[o]=(Math.random()-0.5)*4; jspVel[o+1]=(Math.random()-0.5)*4; jspVel[o+2]=18+Math.random()*16; jspLife[i]=0; }
+// style 4 — shock diamonds: a few bright additive blobs spaced along the exhaust
+const jetDiamonds=[]; for(let k=0;k<4;k++){
+  const s=new THREE.Mesh(new THREE.SphereGeometry(0.34-k*0.05,10,8), new THREE.MeshBasicMaterial({color:0xfff0d0,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false,fog:false}));
+  s.position.set(0,0.02,JET_Z+0.5+k*0.85); s.scale.set(1,1,1.6); s.visible=false; gliderGroup.add(s); jetDiamonds.push(s); }
+function updateJetFX(dt){
+  const on=boostS>0.02;
+  const sparkOn=on && jetMode===3;
+  jspMat.uniforms.uOpacity.value=sparkOn?0.9*boostS:0; jspMesh.visible=jspMat.uniforms.uOpacity.value>0.001;
+  if(sparkOn) for(let k=0;k<3;k++) spawnSpark();
+  for(let i=0;i<JSP_N;i++){ if(jspLife[i]>=1){ jspAlf[i]=1; continue; } const o=i*3;
+    jspPos[o]+=jspVel[o]*dt; jspPos[o+1]+=jspVel[o+1]*dt; jspPos[o+2]+=jspVel[o+2]*dt; jspLife[i]+=dt*3.2; jspAlf[i]=clamp(jspLife[i],0,1); }
+  jspGeo.attributes.position.needsUpdate=true; jspGeo.attributes.aLife.needsUpdate=true;
+  const diaOn=on && jetMode===4;
+  for(let k=0;k<jetDiamonds.length;k++){ const s=jetDiamonds[k]; s.visible=diaOn;
+    if(diaOn){ const pulse=0.6+0.4*Math.sin(simTime*16-k*1.1); s.material.opacity=boostS*pulse*0.8; const sc=(0.7+0.3*pulse)*boostS; s.scale.set(sc,sc,sc*1.7); } }
+}
+function setJetMode(m){ jetMode=clamp(Math.round(m),1,5); prefSet('jetmode',jetMode);
+  const el=document.getElementById('trailpick'); if(el){ el.textContent='Двигатель '+jetMode+'/5 · '+JET_NAMES[jetMode]; el.classList.remove('hidden');
+    clearTimeout(setJetMode._t); setJetMode._t=setTimeout(()=>el.classList.add('hidden'),2600); } }
+
 // load-driven wing-bow spring: bends UP eagerly (light damping), eases DOWN over-damped; substepped -> stable
-const FX={ K:13, ZUP:0.5, ZDN:1.0, BEND_G:0.05, BEND_MIN:-0.07, BEND_MAX:0.18 };
+const FX={ K:13, ZUP:0.5, ZDN:1.0, BEND_G:0.024, BEND_MIN:-0.035, BEND_MAX:0.09 };   // stiffer wings (~half the bow)
 function updateFlex(dt){
   if(!flex.ready) return;
   dt=Math.min(dt,0.05); const N=4, sdt=dt/N;
@@ -778,11 +815,19 @@ function updateFlex(dt){
   if(flex.ailR){ flex.ailR.rotation.x=0.5*flex.sAil; flex.ailL.rotation.x=-0.5*flex.sAil; }   // ailerons antisymmetric (roll into the bank)
   if(flex.elev)   flex.elev.rotation.x=-0.42*flex.sElev;                                       // elevator (pitch — TE up = nose up)
   if(flex.rudder) flex.rudder.rotation.y=0.5*flex.sRud;                                        // rudder (yaw — TE toward the turn)
-  // jet boost flame (Shift)
+  // jet boost exhaust (Shift) — 5 styles (1 steady · 2 afterburner · 3 sparks · 4 diamonds · 5 turbulent)
   boostS += ((boosting?1:0)-boostS)*clamp(dt*8,0,1);
-  if(flex.jet){ const vis=boostS>0.02; flex.jet.visible=vis;
-    if(vis){ flex.jet.material.opacity=boostS*0.85; const fl=0.85+0.25*Math.sin(simTime*45);
-      flex.jet.scale.set(0.7+boostS*0.5, 0.7+boostS*0.5, (0.5+boostS*1.8)*fl); } }
+  if(flex.jet){ const m=jetMode, coneOn=boostS>0.02 && m!==3; flex.jet.visible=coneOn; let off=0;
+    if(coneOn){ const tt=simTime; let lenK=1.8, wK=0.5, op=0.85;
+      if(m===2){ const pl=0.55+0.45*Math.sin(tt*22); lenK=1.4+1.6*pl; op=0.5+0.5*pl; }
+      else if(m===4){ lenK=1.1; wK=0.32; op=0.6; }                                   // thin core for the shock diamonds
+      else if(m===5){ lenK=1.2+1.6*Math.abs(0.6+0.5*Math.sin(tt*60)+0.2*Math.sin(tt*123)); op=0.65+0.3*Math.sin(tt*52); off=Math.sin(tt*38)*0.12*boostS; }
+      else { lenK=1.8*(0.85+0.25*Math.sin(tt*45)); }                                 // 1 steady, gentle flicker
+      flex.jet.material.opacity=boostS*op;
+      flex.jet.scale.set(0.7+boostS*wK, 0.7+boostS*wK, 0.5+boostS*lenK); }
+    flex.jet.position.x=off;
+  }
+  updateJetFX(dt);
 }
 
 function smoothstep01(a,b,x){ x=clamp((x-a)/(b-a),0,1); return x*x*(3-2*x); }
@@ -790,39 +835,45 @@ function smoothstep01(a,b,x){ x=clamp((x-a)/(b-a),0,1); return x*x*(3-2*x); }
 /* ===================== AIRBRAKES (B2) — Space held = drag + lift dump ===================== */
 let brake=0;                                   // 0..1 smoothed spoiler deployment (held Space)
 const CD_BRAKE=0.17, BRAKE_LIFT_DUMP=0.5;
-// soft "spilled air" vapor streaming aft off the deployed spoilers (feathered sprites, not squares)
-const BRK_N=64, brkPos=new Float32Array(BRK_N*3), brkVel=new Float32Array(BRK_N*3), brkLife=new Float32Array(BRK_N);
-let brkPoints, brkMat;
-{ const cv=document.createElement('canvas'); cv.width=cv.height=64; const g2=cv.getContext('2d');   // soft round sprite
-  const grd=g2.createRadialGradient(32,32,0,32,32,32); grd.addColorStop(0,'rgba(255,255,255,0.9)'); grd.addColorStop(0.45,'rgba(255,255,255,0.3)'); grd.addColorStop(1,'rgba(255,255,255,0)');
-  g2.fillStyle=grd; g2.fillRect(0,0,64,64); const tex=new THREE.CanvasTexture(cv);
-  const rng=mulberry32(303);
-  brkPoints={_spawn:i=>{ const s=rng()<0.5?-1:1; brkPos[i*3]=s*(2.4+rng()*5.4); brkPos[i*3+1]=0.45+(rng()-0.5)*0.5; brkPos[i*3+2]=-0.2+rng()*0.6;
-    brkVel[i*3]=(rng()-0.5)*1.2; brkVel[i*3+1]=0.6+rng()*1.0; brkVel[i*3+2]=7+rng()*5; brkLife[i]=rng(); }};
-  for(let i=0;i<BRK_N;i++) brkPoints._spawn(i);
-  const geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.BufferAttribute(brkPos,3));
-  brkMat=new THREE.PointsMaterial({ map:tex, color:0xeef5fa, size:3.6, sizeAttenuation:true, transparent:true, opacity:0, depthWrite:false, fog:false });
-  const pts=new THREE.Points(geo,brkMat); pts.frustumCulled=false; gliderGroup.add(pts); brkPoints.mesh=pts; brkPoints.geo=geo;
-}
+// "spilled air" off the deployed spoilers — soft cloudy puffs (per-point fade), world-space so they billow & linger
+const BRK_N=120;
+const brkPos=new Float32Array(BRK_N*3), brkVel=new Float32Array(BRK_N*3), brkLife=new Float32Array(BRK_N), brkAlf=new Float32Array(BRK_N);
+for(let i=0;i<BRK_N;i++) brkLife[i]=2;
+const _puffTex=(()=>{ const cv=document.createElement('canvas'); cv.width=cv.height=64; const c2=cv.getContext('2d');
+  const gr=c2.createRadialGradient(32,32,0,32,32,32); gr.addColorStop(0,'rgba(255,255,255,0.95)'); gr.addColorStop(0.5,'rgba(255,255,255,0.32)'); gr.addColorStop(1,'rgba(255,255,255,0)');
+  c2.fillStyle=gr; c2.fillRect(0,0,64,64); return new THREE.CanvasTexture(cv); })();
+const brkGeo=new THREE.BufferGeometry();
+brkGeo.setAttribute('position',new THREE.BufferAttribute(brkPos,3));
+brkGeo.setAttribute('aLife',new THREE.BufferAttribute(brkAlf,1));
+const brkMat=new THREE.ShaderMaterial({ transparent:true, depthWrite:false, fog:false,
+  uniforms:{ uTex:{value:_puffTex}, uColor:{value:new THREE.Color(0xeef5fa)}, uOpacity:{value:0}, uSize:{value:6.5} },
+  vertexShader:`attribute float aLife; varying float vL; uniform float uSize; void main(){ vL=aLife; vec4 mv=modelViewMatrix*vec4(position,1.0); gl_PointSize=uSize*(0.55+0.8*aLife)*(340.0/max(1.0,-mv.z)); gl_Position=projectionMatrix*mv; }`,
+  fragmentShader:`uniform sampler2D uTex; uniform vec3 uColor; uniform float uOpacity; varying float vL; void main(){ float a=(1.0-vL)*uOpacity*texture2D(uTex,gl_PointCoord).a; if(a<0.01) discard; gl_FragColor=vec4(uColor,a); }`});
+const brkMesh=new THREE.Points(brkGeo,brkMat); brkMesh.frustumCulled=false; brkMesh.renderOrder=2; scene.add(brkMesh);
+let _brkHead=0; const _brkSpawn=new THREE.Vector3();
+function spawnPuff(wx,wy,wz){ const i=_brkHead; _brkHead=(_brkHead+1)%BRK_N; const o=i*3;
+  brkPos[o]=wx+(Math.random()-0.5)*1.3; brkPos[o+1]=wy+(Math.random()-0.5)*0.8; brkPos[o+2]=wz+(Math.random()-0.5)*1.3;
+  brkVel[o]=(Math.random()-0.5)*1.6; brkVel[o+1]=0.5+Math.random()*1.3; brkVel[o+2]=(Math.random()-0.5)*1.6; brkLife[i]=0; }
 function updateBrakeFX(dt){
   dt=Math.min(dt||0.016,0.05);
-  brkMat.opacity=0.15*brake;
-  if(brake<0.02) return;
-  const sp=brkPoints._spawn;
-  for(let i=0;i<BRK_N;i++){ const o=i*3;
-    brkPos[o]+=brkVel[o]*dt; brkPos[o+1]+=brkVel[o+1]*dt; brkPos[o+2]+=brkVel[o+2]*dt;
-    brkLife[i]+=dt*1.3;
-    if(brkLife[i]>1 || brkPos[o+2]>11) sp(i);
+  brkMat.uniforms.uOpacity.value=0.34*brake;
+  if(brake>0.06){                                   // shed puffs from both spoilers (world space via the live render transform)
+    const q=gliderGroup.quaternion, P=gliderGroup.position, n=brake>0.5?2:1, hs=CLASSIC.span*0.21;
+    for(const sgn of [1,-1]) for(let k=0;k<n;k++){
+      _brkSpawn.set(sgn*hs, CLASSIC.wingY+0.55, CLASSIC.wingZ+0.1).applyQuaternion(q).add(P);
+      spawnPuff(_brkSpawn.x,_brkSpawn.y,_brkSpawn.z);
+    }
   }
-  brkPoints.geo.attributes.position.needsUpdate=true;
+  for(let i=0;i<BRK_N;i++){ if(brkLife[i]>=1){ brkAlf[i]=1; continue; } const o=i*3;
+    brkPos[o]+=brkVel[o]*dt; brkPos[o+1]+=brkVel[o+1]*dt; brkPos[o+2]+=brkVel[o+2]*dt;
+    brkLife[i]+=dt*1.05; brkAlf[i]=clamp(brkLife[i],0,1); }
+  brkGeo.attributes.position.needsUpdate=true; brkGeo.attributes.aLife.needsUpdate=true;
 }
 
 /* ===================== WINGTIP VORTEX TRAILS (C3 — ribbon from the tips, toggle) =====================
    Camera-facing ribbon from each wingtip. Profile along the trail: thin & faint where it leaves the
    tip, widening & strengthening downstream, then fading at the far tail. Attaches to the bowing tip. */
-let trailsOn=prefB('trails',true);
-let trailMode=clamp(Math.round(prefN('trailmode',1)),1,5);   // 1 wavy ribbon · 2 vapor · 3 helix · 4 dashes · 5 sparks
-const TRAIL_NAMES={1:'волнистая лента',2:'пар / клочья',3:'двойная спираль',4:'пунктир',5:'частицы'};
+let trailsOn=prefB('trails',true);   // wingtip vortex ribbon — faint running dashes (chosen style)
 const TRAIL_N=46, HALF_SPAN=CLASSIC.span/2;
 const trW=new Float32Array(TRAIL_N), trA=new Float32Array(TRAIL_N);   // static width/alpha vs position
 for(let i=0;i<TRAIL_N;i++){ const u=(TRAIL_N-1-i)/(TRAIL_N-1);        // u: 0 at tip (newest) -> 1 at oldest
@@ -855,75 +906,27 @@ function rebuildRibbon(tr){
     if(_tan.lengthSq()<1e-8) _tan.copy(_fb); else { _tan.normalize(); _fb.copy(_tan); }
     _vd.set(cam.x-c[o], cam.y-c[o+1], cam.z-c[o+2]);
     _sd.crossVectors(_tan,_vd); if(_sd.lengthSq()<1e-8) _sd.set(1,0,0); else _sd.normalize();
-    let w=trW[i];
-    if(trailMode===3){                       // double helix: two strands spiral around the core
-      _uph.crossVectors(_tan,_sd);
-      const ph=i*0.85, cw=Math.cos(ph)*w*1.4, sw=Math.sin(ph)*w*1.4;
-      const ox=_sd.x*cw+_uph.x*sw, oy=_sd.y*cw+_uph.y*sw, oz=_sd.z*cw+_uph.z*sw;
-      v[a]=c[o]+ox; v[a+1]=c[o+1]+oy; v[a+2]=c[o+2]+oz;
-      v[a+3]=c[o]-ox; v[a+4]=c[o+1]-oy; v[a+5]=c[o+2]-oz; continue;
-    }
-    let cx=c[o], cy=c[o+1], cz=c[o+2];
-    if(trailMode===1){                       // wavy ribbon: snake the centreline + breathe the width
-      const wob=(Math.sin(i*0.8+t*6.0)+0.6*Math.sin(i*0.31-t*3.7))*0.6;
-      cx+=_sd.x*wob; cy+=_sd.y*wob; cz+=_sd.z*wob;
-      w*=0.6+0.55*Math.abs(Math.sin(i*0.5+t*2.2));
-    }
-    v[a]=cx+_sd.x*w;   v[a+1]=cy+_sd.y*w; v[a+2]=cz+_sd.z*w;
-    v[a+3]=cx-_sd.x*w; v[a+4]=cy-_sd.y*w; v[a+5]=cz-_sd.z*w;
+    const w=trW[i];
+    v[a]=c[o]+_sd.x*w;   v[a+1]=c[o+1]+_sd.y*w; v[a+2]=c[o+2]+_sd.z*w;
+    v[a+3]=c[o]-_sd.x*w; v[a+4]=c[o+1]-_sd.y*w; v[a+5]=c[o+2]-_sd.z*w;
   }
   tr.geo.attributes.position.needsUpdate=true;
 }
 function seedTrail(tr,sign,rp,rq){ wingTipLocal(sign,_tip).applyQuaternion(rq).add(rp);
   for(let i=0;i<TRAIL_N;i++){ tr.cpos[i*3]=_tip.x; tr.cpos[i*3+1]=_tip.y; tr.cpos[i*3+2]=_tip.z; } rebuildRibbon(tr); }
-// ---- particle trail (modes 2 vapor / 5 sparks): world-space soft sprites shed off the tips ----
-const TRP_N=150;
-const trpPos=new Float32Array(TRP_N*3), trpVel=new Float32Array(TRP_N*3), trpLife=new Float32Array(TRP_N), trpAlf=new Float32Array(TRP_N);
-for(let i=0;i<TRP_N;i++) trpLife[i]=2;                       // start dead
-const _trpTex=(()=>{ const cv=document.createElement('canvas'); cv.width=cv.height=64; const g2=cv.getContext('2d');
-  const gr=g2.createRadialGradient(32,32,0,32,32,32); gr.addColorStop(0,'rgba(255,255,255,0.95)'); gr.addColorStop(0.5,'rgba(255,255,255,0.32)'); gr.addColorStop(1,'rgba(255,255,255,0)');
-  g2.fillStyle=gr; g2.fillRect(0,0,64,64); return new THREE.CanvasTexture(cv); })();
-const trpGeo=new THREE.BufferGeometry();
-trpGeo.setAttribute('position',new THREE.BufferAttribute(trpPos,3));
-trpGeo.setAttribute('aLife',new THREE.BufferAttribute(trpAlf,1));
-const trpMat=new THREE.ShaderMaterial({ transparent:true, depthWrite:false, fog:false,
-  uniforms:{ uTex:{value:_trpTex}, uColor:{value:new THREE.Color(0xe6eef5)}, uOpacity:{value:0}, uSize:{value:5.0} },
-  vertexShader:`attribute float aLife; varying float vL; uniform float uSize; void main(){ vL=aLife; vec4 mv=modelViewMatrix*vec4(position,1.0); gl_PointSize=uSize*(1.0-0.35*aLife)*(320.0/max(1.0,-mv.z)); gl_Position=projectionMatrix*mv; }`,
-  fragmentShader:`uniform sampler2D uTex; uniform vec3 uColor; uniform float uOpacity; varying float vL; void main(){ float a=(1.0-vL)*uOpacity*texture2D(uTex,gl_PointCoord).a; if(a<0.01) discard; gl_FragColor=vec4(uColor,a); }`});
-const trpMesh=new THREE.Points(trpGeo,trpMat); trpMesh.frustumCulled=false; trpMesh.renderOrder=3; trpMesh.visible=false; scene.add(trpMesh);
-let _trpHead=0;
-function spawnTrp(x,y,z,mode){ const i=_trpHead; _trpHead=(_trpHead+1)%TRP_N; const o=i*3, sp=mode===5?3.2:1.0;
-  trpPos[o]=x; trpPos[o+1]=y; trpPos[o+2]=z;
-  trpVel[o]=(Math.random()-0.5)*sp; trpVel[o+1]=-0.4-Math.random()*0.9; trpVel[o+2]=(Math.random()-0.5)*sp; trpLife[i]=0; }
-function updateTrailPoints(dt,mode){
-  trpMat.uniforms.uSize.value=mode===5?2.0:5.5; trpMat.uniforms.uOpacity.value=mode===5?0.85:0.6;
-  const rate=mode===5?2.0:0.9;
-  for(let i=0;i<TRP_N;i++){ if(trpLife[i]>=1){ trpAlf[i]=1; continue; } const o=i*3;
-    trpPos[o]+=trpVel[o]*dt; trpPos[o+1]+=trpVel[o+1]*dt; trpPos[o+2]+=trpVel[o+2]*dt;
-    trpLife[i]+=rate*dt; trpAlf[i]=clamp(trpLife[i],0,1); }
-  trpGeo.attributes.position.needsUpdate=true; trpGeo.attributes.aLife.needsUpdate=true;
-}
 function updateTrails(rp,rq,dt){
-  dt=Math.min(dt||FIXED,0.05);
   const g=Math.abs(glider.gload), emit=trailsOn && g>1.2;
-  const op = emit ? clamp((g-1.2)*0.55,0,0.9) : 0;                // vortices appear under G (turns/pulls)
-  const ribbon=(trailMode===1||trailMode===3||trailMode===4);
-  trailR.mesh.visible=trailL.mesh.visible=ribbon; trpMesh.visible=!ribbon;
+  const op = emit ? clamp((g-1.2)*0.4,0,0.5) : 0;                 // faint/transparent dashed vortex ribbon
+  const t=simTime*6.5;
   for(const [tr,sign] of [[trailR,1],[trailL,-1]]){
     wingTipLocal(sign,_tip).applyQuaternion(rq).add(rp);
     tr.cpos.copyWithin(0,3); const n=tr.cpos.length; tr.cpos[n-3]=_tip.x; tr.cpos[n-2]=_tip.y; tr.cpos[n-1]=_tip.z;
-    if(ribbon){ tr.mat.uniforms.uOpacity.value=op; rebuildRibbon(tr);
-      const va=tr.geo.attributes.aAlpha.array;
-      if(trailMode===4){ const t=simTime*6.5; for(let i=0;i<TRAIL_N;i++){ const u=(TRAIL_N-1-i)/(TRAIL_N-1); const d=smoothstep01(0.35,0.6,0.5+0.5*Math.sin(u*40-t)); va[i*2]=va[i*2+1]=trA[i]*d; } }
-      else { for(let i=0;i<TRAIL_N;i++){ va[i*2]=va[i*2+1]=trA[i]; } }
-      tr.geo.attributes.aAlpha.needsUpdate=true;
-    } else if(emit){ const cnt=trailMode===5?3:1; for(let k=0;k<cnt;k++) spawnTrp(_tip.x,_tip.y,_tip.z,trailMode); }
+    tr.mat.uniforms.uOpacity.value=op; rebuildRibbon(tr);
+    const va=tr.geo.attributes.aAlpha.array;                      // running dashes
+    for(let i=0;i<TRAIL_N;i++){ const u=(TRAIL_N-1-i)/(TRAIL_N-1); const d=smoothstep01(0.35,0.6,0.5+0.5*Math.sin(u*40-t)); va[i*2]=va[i*2+1]=trA[i]*d; }
+    tr.geo.attributes.aAlpha.needsUpdate=true;
   }
-  if(!ribbon) updateTrailPoints(dt,trailMode);
 }
-function setTrailMode(m){ trailMode=clamp(Math.round(m),1,5); prefSet('trailmode',trailMode);
-  const el=document.getElementById('trailpick'); if(el){ el.textContent='След '+trailMode+'/5 · '+TRAIL_NAMES[trailMode]; el.classList.remove('hidden');
-    clearTimeout(setTrailMode._t); setTrailMode._t=setTimeout(()=>el.classList.add('hidden'),2600); } }
 
 /* ===================== NEAR-MISS FX (C1) + TERRAIN CRASH (G2) ===================== */
 let nearMiss=0, fxOn=prefB('fx',true), crashOn=prefB('crash',false);   // crash into terrain OFF by default
@@ -952,7 +955,7 @@ addEventListener('keydown',e=>{ if(e.target&&e.target.tagName==='INPUT') return;
   if(e.code==='KeyR'){ if(state!=='menu') startFlight(); }
   else if(e.code==='KeyM'){ setAudioOn(!audioOn); }
   else if(e.code==='KeyH'){ openGuide(); }
-  else if(e.code==='Digit1'||e.code==='Digit2'||e.code==='Digit3'||e.code==='Digit4'||e.code==='Digit5'){ setTrailMode(+e.code.slice(5)); }   // pick wingtip-trail style
+  else if(e.code==='Digit1'||e.code==='Digit2'||e.code==='Digit3'||e.code==='Digit4'||e.code==='Digit5'){ setJetMode(+e.code.slice(5)); }   // pick jet-exhaust style (visible on Shift boost)
   else if(e.code==='Escape'){ if(state==='flying'||state==='paused') openSettings(); else if(state==='settings') resumeFlight(); }
   else if(e.code==='KeyP'){ if(state==='flying') pauseFreeze(); else if(state==='paused') resumeFlight(); }   // P: freeze-pause toggle
   else if(e.code==='Space'){ if(state==='menu'||state==='crashed') startFlight(); } });                       // Space held = airbrakes in flight
@@ -1610,7 +1613,7 @@ function loop(now){
   if(!previewMode){ gliderGroup.position.copy(_rp); gliderGroup.quaternion.copy(_rq);
     updateCamera(frame||FIXED, _rp, _rq); }
   updateFlex(frame||FIXED);
-  if(state==='flying') updateTrails(_rp,_rq,frame||FIXED); else { trailR.mat.uniforms.uOpacity.value=0; trailL.mat.uniforms.uOpacity.value=0; trpMat.uniforms.uOpacity.value=0; }
+  if(state==='flying') updateTrails(_rp,_rq,frame||FIXED); else { trailR.mat.uniforms.uOpacity.value=0; trailL.mat.uniforms.uOpacity.value=0; }
   updateBrakeFX(frame||FIXED);
   sky.position.copy(camera.position);
   sun.position.copy(_rp).add(SUN_OFFSET); sun.target.position.copy(_rp); sun.target.updateMatrixWorld();
@@ -1644,7 +1647,7 @@ window.__swooper={
   flexState(){ return {bend:+flex.bend.toFixed(4), wingR:+flex.wingR.rotation.z.toFixed(3), wingL:+flex.wingL.rotation.z.toFixed(3)}; },
   surf(){ return { ail:+(flex.ailR?flex.ailR.rotation.x:0).toFixed(3), elev:+(flex.elev?flex.elev.rotation.x:0).toFixed(3), rud:+(flex.rudder?flex.rudder.rotation.y:0).toFixed(3) }; },
   boostState(){ return { on:boosting, s:+boostS.toFixed(2), jetVis:flex.jet?flex.jet.visible:false }; },
-  trailMode(){ return trailMode; }, setTrailMode(m){ setTrailMode(m); }, trailVis(){ return { ribbonR:trailR.mesh.visible, pts:trpMesh.visible, ptsOp:+trpMat.uniforms.uOpacity.value.toFixed(2) }; },
+  jetMode(){ return jetMode; }, setJetMode(m){ setJetMode(m); }, jetFx(){ return { cone:flex.jet?flex.jet.visible:false, sparks:jspMesh.visible, dia0:jetDiamonds[0]?jetDiamonds[0].visible:false }; },
   preview(dist=16,az=0.7,el=0.34,g=null){ if(g!=null) glider.gload=g; previewMode=true; gliderGroup.position.set(0,0,0); gliderGroup.quaternion.identity();
     camera.position.set(Math.sin(az)*Math.cos(el)*dist, Math.sin(el)*dist, Math.cos(az)*Math.cos(el)*dist); camera.lookAt(0,0.4,0); },
   varioGainNow(){ return varioGain?+varioGain.gain.value.toFixed(4):-1; },
@@ -1671,7 +1674,7 @@ window.__swooper={
   crashState(){ return {on:crashOn, state}; }, setCrash(v){ crashOn=v; },
   trailOpacity(){ return +trailR.mat.uniforms.uOpacity.value.toFixed(3); }, setTrails(v){ trailsOn=v; },
   trailTipDist(){ const c=trailR.cpos,n=c.length; return +Math.hypot(c[n-3]-glider.pos.x,c[n-2]-glider.pos.y,c[n-3+2]-glider.pos.z).toFixed(2); },
-  varioState(){ return varioOn; }, brakeFxOpacity(){ return +brkMat.opacity.toFixed(3); },
+  varioState(){ return varioOn; }, brakeFxOpacity(){ return +brkMat.uniforms.uOpacity.value.toFixed(3); },
   orbit(az,el){ camOrbitAz=az; camOrbitEl=el; camIdle=0; }, camAz(){ return +camOrbitAz.toFixed(3); },
   dragState(){ return {dragging, camIdle:+camIdle.toFixed(2), az:+camOrbitAz.toFixed(2), el:+camOrbitEl.toFixed(2)}; },
   camRel(){ const c=camera.position, g=gliderGroup.position;
