@@ -279,7 +279,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.79';
+const VERSION = '0.80';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -476,28 +476,32 @@ function windBaseAt(x,z,t,out){
   const spd=WIND_MEAN*(0.55+0.9*b);                            // 0.55..1.45 × seed mean, drifting over km
   return out.set(Math.sin(h)*spd, 0, -Math.cos(h)*spd);
 }
-// thermals: static source strength 0..1 (smoothstep core -> wider & catchable)
-// + gentle time wobble. Drives lift, GROUND TINT and CLOUD placement alike.
-const RIDGE_GAIN=0.6, RIDGE_H=2400, THERMAL_GAIN=52, THERMAL_H=8000, THFF=0.00015, THERMAL_THRESH=0.30;   // THFF lower -> bigger thermal zones
-// thermals slider (weak<->strong): scales BOTH the lift (thermGain) and zone size/frequency (lower threshold = bigger, more zones)
-let thermalScale=clamp(prefN('therm',1),0.3,1.8);
-let thermThresh=clamp(THERMAL_THRESH-(thermalScale-1)*0.18, 0.08, 0.55), thermGain=THERMAL_GAIN*thermalScale;
-function thermalStrength(x,z){
-  const a=x*THFF, b=z*THFF;
-  const u=a + Math.sin(b*1.7+1.3)*0.6 + Math.sin(b*3.3+4.0)*0.25;     // domain warp -> organic clusters, not a grid
-  const v=b + Math.sin(a*1.9+2.7)*0.6 + Math.cos(a*3.1+0.5)*0.25;
-  const n=vnoise(u+3.1,v+1.7)*0.82 + vnoise(u*2.5+11.0,v*2.5+7.0)*0.18;   // 2 octaves -> irregular cores
-  const c=clamp((n-thermThresh)/(1-thermThresh),0,1); return c*c*(3-2*c);
+// SOLAR thermals: a slope's heating = cos of the sun's angle of incidence = the SAME value that LIGHTS it (Lambert diffuse).
+// Sun-facing (bright) slopes heat -> rise; flat/grazing -> weak; shadowed/back-facing (dark) slopes -> mild sink.
+// Everything stays coherent with what you SEE: lift is over the lit ground, sink over the dark.  Sun is fixed (one direction, all worlds).
+const RIDGE_GAIN=0.6, RIDGE_H=2400, THERMAL_H=8000, THFF2=0.00018;
+const SUN_NX=SUN_DIR.x, SUN_NY=SUN_DIR.y, SUN_NZ=SUN_DIR.z;
+const THERM_NEUTRAL=0.27, THERM_UP=110, THERM_DN=22;   // crossover just below flat-ground heat (~0.31): strong up / mild sink
+let thermalScale=clamp(prefN('therm',1),0.3,1.8);      // slider scales the whole solar drive
+function solarHeat(gx,gz){ const nl=Math.sqrt(gx*gx+1+gz*gz); return (-gx*SUN_NX + SUN_NY - gz*SUN_NZ)/nl; }   // cos(incidence): 1 sun-perpendicular, 0 grazing, <0 facing away
+function solarLift(x,z,gx,gz,t){
+  const e=solarHeat(gx,gz)-THERM_NEUTRAL;
+  if(e>0){ const patch=0.55+0.45*vnoise(x*THFF2+5.0,z*THFF2+9.0), wob=0.9+0.1*Math.sin(t*0.2+x*0.0013+z*0.0011);
+    return THERM_UP*e*patch*wob*thermalScale; }   // bright slope -> updraft, with light organic patchiness
+  return THERM_DN*e*thermalScale;                  // shadow / back-facing -> mild sink (e<0)
 }
-function thermalAt(x,z,t){ return thermalStrength(x,z)*(0.80+0.20*Math.sin(t*0.2 + x*0.0013 + z*0.0011)); }
+// thermal SOURCE strength 0..1 over the ground (for cloud placement / radar hints) — same solar drive
+function thermalSource(x,z){ const d=60, gx=(terrainHeight(x+d,z)-terrainHeight(x-d,z))/(2*d), gz=(terrainHeight(x,z+d)-terrainHeight(x,z-d))/(2*d);
+  const e=solarHeat(gx,gz)-THERM_NEUTRAL; if(e<=0) return 0;
+  return clamp(e*(0.55+0.45*vnoise(x*THFF2+5.0,z*THFF2+9.0))*2.4,0,1); }
 const _wbLift=new THREE.Vector3();
 function windLift(x,y,z,t){
   const ag=Math.max(0, y-terrainHeight(x,z)), d=45;
   const gx=(terrainHeight(x+d,z)-terrainHeight(x-d,z))/(2*d), gz=(terrainHeight(x,z+d)-terrainHeight(x,z-d))/(2*d);
   windBaseAt(x,z,t,_wbLift);
-  const oro=RIDGE_GAIN*(_wbLift.x*gx+_wbLift.z*gz)*Math.exp(-ag/RIDGE_H);  // wind into a windward face -> updraft (lee -> sink)
-  const th =thermGain*thermalAt(x,z,t)*Math.exp(-ag/THERMAL_H);            // rising thermal columns (slider-scaled)
-  return clamp(oro+th, -26, 28);   // gentle enough to add lift, not spike AoA into a stall — you can always dive out
+  const oro=RIDGE_GAIN*(_wbLift.x*gx+_wbLift.z*gz)*Math.exp(-ag/RIDGE_H);  // wind into a windward face -> updraft (lee -> sink) — kept alongside
+  const th =solarLift(x,z,gx,gz,t)*Math.exp(-ag/THERMAL_H);               // sun-driven thermals (bright up / dark sink)
+  return clamp(oro+th, -26, 28);   // never spikes AoA into a stall — you can always dive out
 }
 // B5 TERRAIN-STEERED WIND: venturi speed-up over windward faces/cols, lee stall, slope deflection,
 // layered on the windBaseAt drift via the SAME terrain gradient windLift uses. Hard-clamped (AoA-safe).
@@ -526,11 +530,7 @@ function setColor(col,o,h,ny,wx,wz){
   let r=C_ROCK[0],g=C_ROCK[1],b=C_ROCK[2];                       // rock base
   const gf=green*(1-steep);  r+=(C_GREEN[0]-r)*gf; g+=(C_GREEN[1]-g)*gf; b+=(C_GREEN[2]-b)*gf;   // green low/gentle
   const sf=snow*(1-steep*0.55); r+=(C_SNOW[0]-r)*sf; g+=(C_SNOW[1]-g)*sf; b+=(C_SNOW[2]-b)*sf;   // snow high
-  // THERMAL TINT: sun-baked dark/warm patches mark the strong rising columns
-  // (those that grow a cumulus above) -> look down = dark patch, look up = cloud.
-  const th=thermalStrength(wx,wz);
-  if(th>0.10){ const k=clamp((th-0.10)*1.8,0,0.9)*(1-snow*0.85);     // much darker & wider — clearly readable from the air
-    r+=(0.06-r)*k; g+=(0.04-g)*k; b+=(0.028-b)*k; }
+  // no artificial thermal tint anymore — the sun's own shading marks lift: bright sun-facing slopes rise, dark ones sink
   col[o]=r; col[o+1]=g; col[o+2]=b;
 }
 let rimUniforms=null;
@@ -589,12 +589,11 @@ function updateTerrain(){
     if(ch.cx!==cx||ch.cz!==cz) buildChunk(ch,cx,cz);
   }
 }
-// thermals slider: rescale lift + zone size, then force chunks (re-tint) & clouds to rebuild
+// thermals slider: scale the solar drive, then force clouds to rebuild over the new source field
 function setThermals(scale){
   thermalScale=clamp(scale,0.3,1.8);
-  thermThresh=clamp(THERMAL_THRESH-(thermalScale-1)*0.18, 0.08, 0.55); thermGain=THERMAL_GAIN*thermalScale;
   prefSet('therm', thermalScale);
-  for(const ch of chunks){ ch.cx=null; ch.cz=null; } cloudCX=null;     // rebuild on next updateTerrain/updateClouds
+  cloudCX=null;     // rebuild clouds on next updateClouds (ground no longer tinted, so chunks don't need rebuilding)
 }
 
 /* ===================== WIND PARTICLES (parcels of air) ===================== */
@@ -614,7 +613,7 @@ function updateAirParticles(dt){
   const wx=_wbPart.x*dt, wz=_wbPart.z*dt;
   for(let i=0;i<AIR_N;i++){
     const o=i*3;
-    let x=airPos[o]+wx, y=airPos[o+1]+thermalAt(airPos[o],airPos[o+2],simTime)*28*dt, z=airPos[o+2]+wz;
+    let x=airPos[o]+wx, y=airPos[o+1], z=airPos[o+2]+wz;   // wind tracers (drift with the wind; lift is shown by vario/radar)
     let rx=x-c.x; rx-=AIR_BOX*Math.round(rx/AIR_BOX); x=c.x+rx;
     let ry=y-c.y; ry-=AIR_BOX*Math.round(ry/AIR_BOX); y=c.y+ry;
     let rz=z-c.z; rz-=AIR_BOX*Math.round(rz/AIR_BOX); z=c.z+rz;
@@ -667,7 +666,7 @@ function updateClouds(){
   let p=0;
   for(let dz=-CLOUD_R;dz<=CLOUD_R;dz++)for(let dx=-CLOUD_R;dx<=CLOUD_R;dx++){
     const cx=ccx+dx, cz=ccz+dz, wx=cx*CLOUD_CELL, wz=cz*CLOUD_CELL;
-    const s=thermalStrength(wx,wz);
+    const s=thermalSource(wx,wz);                                       // cumulus over the sun-heated (bright) slopes
     const ambient = s<=CLOUD_THRESH && hash2(cx*7+1, cz*13+5)>0.70;     // sparse fair-weather puffs
     const base=Math.max(CLOUD_BASE, terrainHeight(wx,wz)+500);
     for(let k=0;k<CLOUD_PUFFS;k++){
@@ -1605,7 +1604,8 @@ window.__swooper={
   th(x,z){ return +terrainHeight(x,z).toFixed(0); },
   liftAt(x,y,z){ return +windLift(x,y,z,simTime).toFixed(1); },
   craftLift(){ return +windLift(glider.pos.x,glider.pos.y,glider.pos.z,simTime).toFixed(1); },
-  tstr(x,z){ return +thermalStrength(x,z).toFixed(3); },
+  tstr(x,z){ return +thermalSource(x,z).toFixed(3); },
+  heatAt(x,z){ const d=60, gx=(terrainHeight(x+d,z)-terrainHeight(x-d,z))/(2*d), gz=(terrainHeight(x,z+d)-terrainHeight(x,z-d))/(2*d); return +solarHeat(gx,gz).toFixed(3); },
   windBase(x,z){ const v=windBaseAt(x,z,simTime,new THREE.Vector3()); return {x:+v.x.toFixed(1),z:+v.z.toFixed(1),mag:+Math.hypot(v.x,v.z).toFixed(1),ang:+(Math.atan2(v.x,-v.z)*DEG).toFixed(0)}; },
   cloudCount(){ let n=0; for(let i=0;i<cloudSize.array.length;i++) if(cloudSize.array[i]>0) n++; return n; },
   flexState(){ return {bend:+flex.bend.toFixed(4), wingR:+flex.wingR.rotation.z.toFixed(3), wingL:+flex.wingL.rotation.z.toFixed(3)}; },
@@ -1618,7 +1618,7 @@ window.__swooper={
   palette(){ return {seed, blueHour:PAL.blueHour, sun:'#'+PAL.sun.getHexString(), horizon:'#'+PAL.horizon.getHexString(), skyTop:'#'+PAL.skyTop.getHexString(), fog:'#'+PAL.fog.getHexString(), green:PAL.green.map(x=>+x.toFixed(2)), snow:PAL.snow.map(x=>+x.toFixed(2))}; },
   setRim(s){ if(rimUniforms) rimUniforms.uRimStrength.value=s; },
   windCompare(x,z,y=2900){ const a=windBaseAt(x,z,simTime,new THREE.Vector3()), b=windSteeredAt(x,z,y,simTime,new THREE.Vector3()); return {base:{mag:+Math.hypot(a.x,a.z).toFixed(1),ang:+(Math.atan2(a.x,-a.z)*DEG).toFixed(0)}, steered:{mag:+Math.hypot(b.x,b.z).toFixed(1)}}; },
-  findThermal(){ for(let R=1700;R<16000;R+=1700)for(let a=0;a<16;a++){ const x=Math.round(Math.cos(a/16*6.28)*R/1700)*1700, z=Math.round(Math.sin(a/16*6.28)*R/1700)*1700, s=thermalStrength(x,z), g=terrainHeight(x,z); if(s>0.5&&g<2000) return {x,z,s:+s.toFixed(2),g:Math.round(g)}; } return null; },
+  findThermal(){ for(let R=1700;R<16000;R+=1700)for(let a=0;a<16;a++){ const x=Math.round(Math.cos(a/16*6.28)*R/1700)*1700, z=Math.round(Math.sin(a/16*6.28)*R/1700)*1700, s=thermalSource(x,z), g=terrainHeight(x,z); if(s>0.5&&g<2000) return {x,z,s:+s.toFixed(2),g:Math.round(g)}; } return null; },
   brakeNow(){ return +brake.toFixed(3); },
   hud(){ return { speedMS:+(glider.airspeed*MPS).toFixed(1), altM:+(glider.pos.y*MPS+ALT_BASE).toFixed(1), varioMS:+(glider.vel.y*MPS).toFixed(2) }; },
   _touch(){ return { active:touch.active, h:+touch.h.toFixed(2), v:+touch.v.toFixed(2), tL, tR }; },
@@ -1629,7 +1629,7 @@ window.__swooper={
   musicNext(){ musicSkip(1); }, musicPrev(){ musicSkip(-1); },
   gfxState(){ return { q:gfxQ, pr:+renderer.getPixelRatio().toFixed(2), shadows:renderer.shadowMap.enabled }; },
   setGfx(q){ setGfx(q); },
-  thermState(){ return { scale:+thermalScale.toFixed(2), thresh:+thermThresh.toFixed(3), gain:+thermGain.toFixed(1) }; },
+  thermState(){ return { scale:+thermalScale.toFixed(2) }; },
   setTherm(s){ setThermals(s); },
   renderInfo(){ const r=renderer.info.render; return { calls:r.calls, triangles:r.triangles }; },
   spoilerDeg(){ return +(flex.spoilerR.rotation.x*DEG).toFixed(1); },
