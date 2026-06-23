@@ -174,7 +174,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.64';
+const VERSION = '0.65';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -1125,7 +1125,12 @@ function updWind(hdg){                                        // live LOCAL wind
   wVal.textContent=Math.round(mag*MPS);
 }
 
-/* ===================== D1 — extra instruments (barograph, G, slip, MacCready, minimap) ===================== */
+/* ===================== D1 — extra instruments (barograph, G, slip, TE-vario, MacCready, minimap) ===================== */
+// total-energy vario: a 2nd (amber, hollow) needle on the vario gauge — distinct from the solid white vario needle
+const vTENeedle=E('polygon',{points:`${VW-16},${VCY} ${VW-9},${VCY-4} ${VW-9},${VCY+4}`,fill:'none',stroke:C_AMBER,'stroke-width':1.4,opacity:0.95},vsvg);
+let prevTE=0, teVarioS=0;
+function updTEVario(ms){ const c=Math.max(-6,Math.min(6,ms)), y=VCY-c*VPX; vTENeedle.setAttribute('points',`${VW-16},${y} ${VW-9},${y-4} ${VW-9},${y+4}`); }
+
 // ---- barograph: altitude vs time (scrolls) ----
 const BARO_W=190, BARO_H=66, BARO_N=150, BARO_PT=14, BARO_PB=5;
 const baroSvg=E('svg',{viewBox:`0 0 ${BARO_W} ${BARO_H}`,width:BARO_W,height:BARO_H,class:'inst'},document.getElementById('i-baro'));
@@ -1203,12 +1208,14 @@ function updMap(hdg){
   }
   for(;d<MAP_DOTS;d++) mapDots[d].setAttribute('opacity',0);
 }
-function resetInst(){ baroLen=0; baroT=0; }
+function resetInst(){ baroLen=0; baroT=0; prevTE=glider.pos.y+(glider.airspeed*glider.airspeed)/(2*G); teVarioS=0; }
 
 function updateHUD(dt){
   const dts=dt||FIXED, air0=glider.airspeed;
   const air=air0*MPS, alt=glider.pos.y*MPS+ALT_BASE, hdg=Math.atan2(_f.x,-_f.z)*DEG, vario=glider.vel.y*MPS;
   updHdg(hdg); updVtape(asi,air); updVtape(alti,alt); updVario(vario); updWind(hdg);
+  const TE=glider.pos.y+(air0*air0)/(2*G), teRate=(TE-prevTE)/dts; prevTE=TE;     // total-energy vario
+  teVarioS += ((teRate*MPS)-teVarioS)*clamp(dts*4,0,1); updTEVario(teVarioS);
   const airmass=windLift(glider.pos.x,glider.pos.y,glider.pos.z,simTime)*MPS;       // vertical air motion (MacCready)
   updG(glider.gload); updSlip(lastBeta); updBaro(alt,dts); updMap(hdg); updMC(airmass);
   stallW.classList.toggle('on', glider.stall>0.4);
