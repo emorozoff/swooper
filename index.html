@@ -19,7 +19,10 @@
   #i-alt{ right:96px; top:50%; transform:translateY(-50%); }
   #i-vario{ right:22px; top:50%; transform:translateY(-50%); }
   #i-wind{ left:24px; bottom:22px; }
-  #i-baro{ left:50%; bottom:16px; transform:translateX(-50%); }
+  #i-baro{ left:50%; bottom:16px; transform:translateX(-50%); transform-origin:bottom center; }
+  /* the 570px barograph would collide with the side gauges on narrow windows -> shrink, then hide */
+  @media (max-width:1040px){ #i-baro{ transform:translateX(-50%) scale(0.66); } }
+  @media (max-width:720px){ #i-baro{ display:none; } }
   #i-map{ right:22px; bottom:18px; }
   #i-g{ left:24px; top:54px; }
   #i-slip{ left:50%; top:80px; transform:translateX(-50%); }
@@ -180,7 +183,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.67';
+const VERSION = '0.68';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -1198,7 +1201,7 @@ function updMC(airmassMS){ mcStf.textContent=Math.round(clamp(40+(MC_SETTING-air
 
 // ---- minimap: heading-up HEATMAP of vertical air motion. red=lift, blue=sink, grey=neutral.
 //      colour scale is RELATIVE — the strongest lift currently in view is the reddest. ----
-const MAP=150, MAPR=MAP/2, MAP_TOP=15, MAP_RANGE=3000, GN=26, PEAK_FLOOR=1.4;
+const MAP=150, MAPR=MAP/2, MAP_TOP=15, MAP_RANGE=3000, GN=26, PEAK_FLOOR=1.4, PEAK_CEIL=12;   // CEIL: one arcade outlier can't wash the rest grey
 const _mdpr=Math.min(window.devicePixelRatio||1, 2);
 const mapCv=document.createElement('canvas'); mapCv.width=MAP*_mdpr; mapCv.height=(MAP+MAP_TOP)*_mdpr;
 mapCv.style.width=MAP+'px'; mapCv.style.height=(MAP+MAP_TOP)+'px'; mapCv.style.display='block';
@@ -1216,22 +1219,23 @@ function sampleHeat(hr){
   for(let j=0;j<GN;j++)for(let i=0;i<GN;i++){
     const cx=(i/(GN-1)-0.5)*2, cy=(j/(GN-1)-0.5)*2;               // -1..1 (top cy<0 = forward)
     const along=-cy*R, cross=cx*R, wx=gx+sh*along+ch*cross, wz=gz-ch*along+sh*cross;   // heading-up -> world
-    const v=windLift(wx,gy,wz,t)*MPS; heatVals[j*GN+i]=v; const av=v<0?-v:v; if(av>mx)mx=av;
+    const v=windLift(wx,gy,wz,t)*MPS; heatVals[j*GN+i]=v; const av=Math.min(v<0?-v:v, PEAK_CEIL); if(av>mx)mx=av;
   }
   heatPeak += (Math.max(PEAK_FLOOR,mx)-heatPeak)*0.2;             // relative scale, eased (no flicker)
   const d=heatImg.data;
   for(let k=0;k<GN*GN;k++){ heatColor(heatVals[k],heatPeak); const o=k*4; d[o]=_hc[0]; d[o+1]=_hc[1]; d[o+2]=_hc[2]; d[o+3]=255; }
   heatCtx.putImageData(heatImg,0,0);
 }
+const MAP_FONT_LIFT='600 10px '+SANS, MAP_FONT_N='600 9px '+SANS;   // hoisted (no per-frame string churn)
 function updMap(hdg,dt){
   const hr=hdg*Math.PI/180, sh=Math.sin(hr), ch=Math.cos(hr), cy0=MAP_TOP+MAPR;
-  heatTimer+=dt; if(heatTimer>=0.18){ heatTimer=0; sampleHeat(hr); }
+  heatTimer+=dt; if(heatTimer>=0.07){ heatTimer=0; sampleHeat(hr); }   // ~14 Hz -> no visible lag vs the live N marker in fast turns
   mapCtx.clearRect(0,0,MAP,MAP+MAP_TOP);
-  mapCtx.textAlign='center'; mapCtx.fillStyle='rgba(234,228,214,0.85)'; mapCtx.font='600 10px '+SANS; mapCtx.fillText('LIFT',MAPR,11);
+  mapCtx.textAlign='center'; mapCtx.fillStyle='rgba(234,228,214,0.85)'; mapCtx.font=MAP_FONT_LIFT; mapCtx.fillText('LIFT',MAPR,11);
   mapCtx.save(); mapCtx.beginPath(); mapCtx.arc(MAPR,cy0,MAPR-1,0,6.2832); mapCtx.clip();
   mapCtx.imageSmoothingEnabled=true; mapCtx.drawImage(heatCv,0,MAP_TOP,MAP,MAP); mapCtx.restore();
   mapCtx.strokeStyle='rgba(234,228,214,0.45)'; mapCtx.lineWidth=1; mapCtx.beginPath(); mapCtx.arc(MAPR,cy0,MAPR-1,0,6.2832); mapCtx.stroke();
-  const r=MAPR-11; mapCtx.fillStyle='rgba(234,228,214,0.9)'; mapCtx.font='600 9px '+SANS; mapCtx.fillText('N',MAPR-sh*r, cy0-ch*r+3);
+  const r=MAPR-11; mapCtx.fillStyle='rgba(234,228,214,0.9)'; mapCtx.font=MAP_FONT_N; mapCtx.fillText('N',MAPR-sh*r, cy0-ch*r+3);
   mapCtx.fillStyle=C_AMBER; mapCtx.beginPath(); mapCtx.moveTo(MAPR,cy0-6); mapCtx.lineTo(MAPR-4,cy0+5); mapCtx.lineTo(MAPR+4,cy0+5); mapCtx.closePath(); mapCtx.fill();
 }
 function resetInst(){ baroLen=0; baroT=0; prevTE=glider.pos.y+(glider.airspeed*glider.airspeed)/(2*G); teVarioS=0; }
