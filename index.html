@@ -180,7 +180,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.66';
+const VERSION = '0.67';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -1145,13 +1145,15 @@ let prevTE=0, teVarioS=0;
 function updTEVario(ms){ const c=Math.max(-6,Math.min(6,ms)), y=VCY-c*VPX; vTENeedle.setAttribute('points',`${VW-16},${y} ${VW-9},${y-4} ${VW-9},${y+4}`); }
 
 // ---- barograph: altitude vs time (scrolls) ----
-const BARO_W=190, BARO_H=66, BARO_N=150, BARO_PT=14, BARO_PB=5;
+const BARO_W=570, BARO_H=96, BARO_N=240, BARO_PT=16, BARO_PB=6;   // ×3 wider, +30 taller
 const baroSvg=E('svg',{viewBox:`0 0 ${BARO_W} ${BARO_H}`,width:BARO_W,height:BARO_H,class:'inst'},document.getElementById('i-baro'));
 E('rect',{x:0,y:0,width:BARO_W,height:BARO_H,rx:4,fill:C_BG},baroSvg);
-E('text',{x:6,y:11,'font-size':9,fill:C_CREAM,opacity:0.7,'font-family':MONO},baroSvg).textContent='ВЫСОТА м';
-const baroPath=E('polyline',{fill:'none',stroke:C_AMBER,'stroke-width':1.6,'stroke-linejoin':'round',opacity:0.95},baroSvg);
-const baroHi=E('text',{x:BARO_W-4,y:11,'text-anchor':'end','font-size':9,fill:C_CREAM,opacity:0.75,'font-family':MONO},baroSvg);
-const baroLo=E('text',{x:BARO_W-4,y:BARO_H-4,'text-anchor':'end','font-size':9,fill:C_CREAM,opacity:0.75,'font-family':MONO},baroSvg);
+for(let i=1;i<12;i++){ const x=(BARO_W/12)*i; E('line',{x1:x,y1:BARO_PT,x2:x,y2:BARO_H-BARO_PB,stroke:C_CREAM,'stroke-width':0.6,opacity:0.12},baroSvg); }   // semi-transparent grid
+for(let j=1;j<4;j++){ const y=BARO_PT+((BARO_H-BARO_PT-BARO_PB)/4)*j; E('line',{x1:0,y1:y,x2:BARO_W,y2:y,stroke:C_CREAM,'stroke-width':0.6,opacity:0.12},baroSvg); }
+E('text',{x:7,y:12,'font-size':10,fill:C_CREAM,opacity:0.7,'font-family':MONO},baroSvg).textContent='ВЫСОТА м';
+const baroPath=E('polyline',{fill:'none',stroke:C_AMBER,'stroke-width':1.8,'stroke-linejoin':'round',opacity:0.95},baroSvg);
+const baroHi=E('text',{x:BARO_W-5,y:12,'text-anchor':'end','font-size':10,fill:C_CREAM,opacity:0.75,'font-family':MONO},baroSvg);
+const baroLo=E('text',{x:BARO_W-5,y:BARO_H-5,'text-anchor':'end','font-size':10,fill:C_CREAM,opacity:0.75,'font-family':MONO},baroSvg);
 const baroBuf=new Float32Array(BARO_N); let baroLen=0, baroT=0;
 function updBaro(alt,dt){
   baroT+=dt; if(baroT>=0.5){ baroT=0; if(baroLen<BARO_N) baroBuf[baroLen++]=alt; else { baroBuf.copyWithin(0,1); baroBuf[BARO_N-1]=alt; } }
@@ -1194,32 +1196,43 @@ E('text',{x:6,y:33,'font-size':9,fill:C_CREAM,opacity:0.7,'font-family':MONO},mc
 const mcStf=E('text',{x:MCW-6,y:33,'text-anchor':'end','font-size':14,fill:C_AMBER,'font-weight':600,'font-family':MONO},mcSvg);
 function updMC(airmassMS){ mcStf.textContent=Math.round(clamp(40+(MC_SETTING-airmassMS)*3.2, 28, 95)); }   // faster in sink, slower in lift
 
-// ---- minimap: heading-up, thermal cores as dots ----
-const MAP=98, MAPC=MAP/2, MAP_RANGE=3000, MAP_DOTS=40;
-const mapSvg=E('svg',{viewBox:`0 -13 ${MAP} ${MAP+13}`,width:MAP,height:MAP+13,class:'inst'},document.getElementById('i-map'));
-E('text',{x:MAPC,y:-3,'text-anchor':'middle','font-size':9,fill:C_CREAM,opacity:0.85,'font-family':MONO},mapSvg).textContent='LIFT';   // thermals (soaring term)
-E('circle',{cx:MAPC,cy:MAPC,r:MAPC-1,fill:C_BG,stroke:C_CREAM,'stroke-width':1,'stroke-opacity':0.4},mapSvg);
-const mapDots=[]; for(let i=0;i<MAP_DOTS;i++) mapDots.push(E('circle',{r:2.4,fill:'#e2b15a',opacity:0},mapSvg));
-const mapN=E('text',{'text-anchor':'middle','font-size':9,fill:C_CREAM,opacity:0.85,'font-family':MONO},mapSvg); mapN.textContent='N';
-E('polygon',{points:`${MAPC},${MAPC-6} ${MAPC-4},${MAPC+5} ${MAPC+4},${MAPC+5}`,fill:C_AMBER},mapSvg);   // glider (always up=forward)
-function updMap(hdg){
-  const hr=hdg*Math.PI/180, sh=Math.sin(hr), ch=Math.cos(hr), rr=MAPC-6;
-  mapN.setAttribute('x',(MAPC-sh*(MAPC-9)).toFixed(1)); mapN.setAttribute('y',(MAPC-ch*(MAPC-9)+3).toFixed(1));   // north, heading-up
-  // sample a WORLD-aligned grid (snapped to GS): cell centres stay put in the world, so as you fly toward a
-  // thermal its dot slides smoothly toward the centre (the old glider-relative grid kept dots in fixed slots).
-  const gx=glider.pos.x, gz=glider.pos.z, GS=750, R2=MAP_RANGE*MAP_RANGE; let d=0;
-  const cx0=Math.round(gx/GS), cz0=Math.round(gz/GS), R=Math.ceil(MAP_RANGE/GS);
-  for(let cz=cz0-R; cz<=cz0+R && d<MAP_DOTS; cz++) for(let cx=cx0-R; cx<=cx0+R && d<MAP_DOTS; cx++){
-    const wx=cx*GS, wz=cz*GS, rx=wx-gx, rz=wz-gz;
-    if(rx*rx+rz*rz>R2) continue;
-    const s=thermalStrength(wx,wz);
-    if(s>0.5){
-      const along=rx*sh - rz*ch, cross=rx*ch + rz*sh;            // rotate world offset into heading-up frame
-      const px=MAPC+(cross/MAP_RANGE)*rr, py=MAPC-(along/MAP_RANGE)*rr;
-      const dt2=mapDots[d++]; dt2.setAttribute('cx',px.toFixed(1)); dt2.setAttribute('cy',py.toFixed(1)); dt2.setAttribute('r',(1.8+s*2.4).toFixed(1)); dt2.setAttribute('opacity',(0.35+s*0.55).toFixed(2));
-    }
+// ---- minimap: heading-up HEATMAP of vertical air motion. red=lift, blue=sink, grey=neutral.
+//      colour scale is RELATIVE — the strongest lift currently in view is the reddest. ----
+const MAP=150, MAPR=MAP/2, MAP_TOP=15, MAP_RANGE=3000, GN=26, PEAK_FLOOR=1.4;
+const _mdpr=Math.min(window.devicePixelRatio||1, 2);
+const mapCv=document.createElement('canvas'); mapCv.width=MAP*_mdpr; mapCv.height=(MAP+MAP_TOP)*_mdpr;
+mapCv.style.width=MAP+'px'; mapCv.style.height=(MAP+MAP_TOP)+'px'; mapCv.style.display='block';
+document.getElementById('i-map').appendChild(mapCv);
+const mapCtx=mapCv.getContext('2d'); mapCtx.scale(_mdpr,_mdpr);
+const heatCv=document.createElement('canvas'); heatCv.width=GN; heatCv.height=GN;
+const heatCtx=heatCv.getContext('2d'), heatImg=heatCtx.createImageData(GN,GN), heatVals=new Float32Array(GN*GN);
+let heatPeak=PEAK_FLOOR, heatTimer=1;
+const _hc=[0,0,0];
+function heatColor(v,peak){ const t=clamp(v/peak,-1,1);
+  if(t>=0){ _hc[0]=68+168*t; _hc[1]=72-14*t; _hc[2]=80-34*t; }              // grey -> red
+  else{ const a=-t; _hc[0]=68-16*a; _hc[1]=72+46*a; _hc[2]=80+146*a; } }    // grey -> blue
+function sampleHeat(hr){
+  const gx=glider.pos.x, gz=glider.pos.z, gy=glider.pos.y, t=simTime, sh=Math.sin(hr), ch=Math.cos(hr), R=MAP_RANGE; let mx=PEAK_FLOOR*0.7;
+  for(let j=0;j<GN;j++)for(let i=0;i<GN;i++){
+    const cx=(i/(GN-1)-0.5)*2, cy=(j/(GN-1)-0.5)*2;               // -1..1 (top cy<0 = forward)
+    const along=-cy*R, cross=cx*R, wx=gx+sh*along+ch*cross, wz=gz-ch*along+sh*cross;   // heading-up -> world
+    const v=windLift(wx,gy,wz,t)*MPS; heatVals[j*GN+i]=v; const av=v<0?-v:v; if(av>mx)mx=av;
   }
-  for(;d<MAP_DOTS;d++) mapDots[d].setAttribute('opacity',0);
+  heatPeak += (Math.max(PEAK_FLOOR,mx)-heatPeak)*0.2;             // relative scale, eased (no flicker)
+  const d=heatImg.data;
+  for(let k=0;k<GN*GN;k++){ heatColor(heatVals[k],heatPeak); const o=k*4; d[o]=_hc[0]; d[o+1]=_hc[1]; d[o+2]=_hc[2]; d[o+3]=255; }
+  heatCtx.putImageData(heatImg,0,0);
+}
+function updMap(hdg,dt){
+  const hr=hdg*Math.PI/180, sh=Math.sin(hr), ch=Math.cos(hr), cy0=MAP_TOP+MAPR;
+  heatTimer+=dt; if(heatTimer>=0.18){ heatTimer=0; sampleHeat(hr); }
+  mapCtx.clearRect(0,0,MAP,MAP+MAP_TOP);
+  mapCtx.textAlign='center'; mapCtx.fillStyle='rgba(234,228,214,0.85)'; mapCtx.font='600 10px '+SANS; mapCtx.fillText('LIFT',MAPR,11);
+  mapCtx.save(); mapCtx.beginPath(); mapCtx.arc(MAPR,cy0,MAPR-1,0,6.2832); mapCtx.clip();
+  mapCtx.imageSmoothingEnabled=true; mapCtx.drawImage(heatCv,0,MAP_TOP,MAP,MAP); mapCtx.restore();
+  mapCtx.strokeStyle='rgba(234,228,214,0.45)'; mapCtx.lineWidth=1; mapCtx.beginPath(); mapCtx.arc(MAPR,cy0,MAPR-1,0,6.2832); mapCtx.stroke();
+  const r=MAPR-11; mapCtx.fillStyle='rgba(234,228,214,0.9)'; mapCtx.font='600 9px '+SANS; mapCtx.fillText('N',MAPR-sh*r, cy0-ch*r+3);
+  mapCtx.fillStyle=C_AMBER; mapCtx.beginPath(); mapCtx.moveTo(MAPR,cy0-6); mapCtx.lineTo(MAPR-4,cy0+5); mapCtx.lineTo(MAPR+4,cy0+5); mapCtx.closePath(); mapCtx.fill();
 }
 function resetInst(){ baroLen=0; baroT=0; prevTE=glider.pos.y+(glider.airspeed*glider.airspeed)/(2*G); teVarioS=0; }
 
@@ -1230,7 +1243,7 @@ function updateHUD(dt){
   const TE=glider.pos.y+(air0*air0)/(2*G), teRate=(TE-prevTE)/dts; prevTE=TE;     // total-energy vario
   teVarioS += ((teRate*MPS)-teVarioS)*clamp(dts*4,0,1); updTEVario(teVarioS);
   const airmass=windLift(glider.pos.x,glider.pos.y,glider.pos.z,simTime)*MPS;       // vertical air motion (MacCready)
-  updG(glider.gload); updSlip(lastBeta); updBaro(alt,dts); updMap(hdg); updMC(airmass);
+  updG(glider.gload); updSlip(lastBeta); updBaro(alt,dts); updMap(hdg,dts); updMC(airmass);
   stallW.classList.toggle('on', glider.stall>0.4);
   updateAudio(); updateVarioSound(vario, dts);
 }
@@ -1411,6 +1424,7 @@ window.__swooper={
   _touch(){ return { active:touch.active, h:+touch.h.toFixed(2), v:+touch.v.toFixed(2), tL, tR }; },
   audioNodes(){ return { rumble:!!rumbleGain, howl:!!howlGain, buff:!!buffLFOGain, ctx:audioCtx?audioCtx.state:'none' }; },
   enclosure(){ return +canyonEnclosure().toFixed(2); },
+  mapPeak(){ return +heatPeak.toFixed(2); },
   music(){ return { idx:musicIdx, on:musicOn, vol:+music.volume.toFixed(2), title:TRACKS[musicIdx].t, artist:TRACKS[musicIdx].a, n:TRACKS.length, ct:+(music.currentTime||0).toFixed(1), paused:music.paused, dur:Math.round(music.duration||0) }; },
   musicNext(){ musicSkip(1); }, musicPrev(){ musicSkip(-1); },
   gfxState(){ return { q:gfxQ, pr:+renderer.getPixelRatio().toFixed(2), shadows:renderer.shadowMap.enabled }; },
