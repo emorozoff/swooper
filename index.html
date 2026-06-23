@@ -125,6 +125,10 @@
     font-family:ui-monospace,monospace; font-size:12px; letter-spacing:1px; color:#dfe6ec;
     background:rgba(10,13,17,.5); border:1px solid rgba(223,230,236,.3); border-radius:20px; padding:6px 16px; transition:opacity .6s; }
   #guidehint.hidden{ opacity:0; }
+  #trailpick{ position:fixed; bottom:152px; left:50%; transform:translateX(-50%); z-index:6; pointer-events:none;
+    font-family:ui-monospace,monospace; font-size:12px; letter-spacing:1px; color:#dfe6ec;
+    background:rgba(10,13,17,.5); border:1px solid rgba(223,230,236,.3); border-radius:20px; padding:6px 16px; transition:opacity .4s; }
+  #trailpick.hidden{ opacity:0; }
   #loaderr{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; text-align:center; padding:30px; z-index:50; }
 </style>
 </head>
@@ -266,6 +270,7 @@
   </div>
 </div>
 <div id="guidehint" class="hidden">H — гайд по полётам</div>
+<div id="trailpick" class="hidden"></div>
 <div id="loaderr"></div>
 
 <script type="importmap">
@@ -279,7 +284,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.74';
+const VERSION = '0.75';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -717,6 +722,15 @@ function buildFlexGlider(){
   const boom=new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.12,boomLen,10),cBody); boom.rotation.x=Math.PI/2; boom.position.z=1.0+boomLen/2; g.add(boom);
   const fin=new THREE.Mesh(new THREE.BoxGeometry(0.14,p.finH,1.5),cAcc); fin.position.set(0,p.finH/2,tailZ-0.2); g.add(fin);   // T-tail
   const hs =new THREE.Mesh(new THREE.BoxGeometry(3.6,0.12,0.9),cWing); hs.position.set(0,p.finH,tailZ-0.2); g.add(hs);
+  // movable control surfaces (red): elevator behind the stabilizer (pitch), rudder behind the fin (yaw)
+  const elevPiv=new THREE.Group(); elevPiv.add(new THREE.Mesh(new THREE.BoxGeometry(3.4,0.1,0.42).translate(0,0,0.21),cAcc));
+  elevPiv.position.set(0,p.finH,tailZ-0.2+0.45); g.add(elevPiv); flex.elev=elevPiv;
+  const rudPiv=new THREE.Group(); rudPiv.add(new THREE.Mesh(new THREE.BoxGeometry(0.12,p.finH*0.86,0.66).translate(0,0,0.33),cAcc));
+  rudPiv.position.set(0,p.finH/2,tailZ-0.2+0.75); g.add(rudPiv); flex.rudder=rudPiv;
+  // jet exhaust flame at the tail boom (additive cone; shows/scales on Shift boost)
+  const jetGeo=new THREE.ConeGeometry(0.42,2.4,12); jetGeo.translate(0,1.2,0);   // base at origin -> grows aft when scaled
+  const jetMesh=new THREE.Mesh(jetGeo, new THREE.MeshBasicMaterial({color:0xffb060,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false,fog:false}));
+  jetMesh.rotation.x=-Math.PI/2; jetMesh.position.set(0,0.02,1.0+boomLen); jetMesh.visible=false; g.add(jetMesh); flex.jet=jetMesh;
   // wing half: a single group hinged at the root (x=0); rotation.z bows the whole panel up under load
   function wing(sign){
     const grp=new THREE.Group(), iL=half*0.5, oL=half*0.5;
@@ -728,10 +742,14 @@ function buildFlexGlider(){
     sp.geometry.translate(0,0.025,0.25);                                  // hinge at front edge -> plate lies aft & up
     const piv=new THREE.Group(); piv.position.set(sign*half*0.40, th*0.55, -0.05); piv.add(sp);
     grp.add(piv);
+    // aileron: outer trailing-edge flap (red), hinges about the span axis
+    const ailPiv=new THREE.Group();
+    ailPiv.add(new THREE.Mesh(new THREE.BoxGeometry(oL*0.78,th*0.9,0.34).translate(0,0,0.17), cAcc));
+    ailPiv.position.set(sign*(iL+oL*0.55), 0, root*0.5-0.05); grp.add(ailPiv);
     grp.position.set(sign*0.45,p.wingY,p.wingZ);
-    return {grp,piv};
+    return {grp,piv,ailPiv};
   }
-  { const R=wing(1), L=wing(-1); flex.wingR=R.grp; flex.wingL=L.grp; flex.spoilerR=R.piv; flex.spoilerL=L.piv; g.add(R.grp); g.add(L.grp); }
+  { const R=wing(1), L=wing(-1); flex.wingR=R.grp; flex.wingL=L.grp; flex.spoilerR=R.piv; flex.spoilerL=L.piv; flex.ailR=R.ailPiv; flex.ailL=L.ailPiv; g.add(R.grp); g.add(L.grp); }
   flex.dih=p.dih; flex.bend=0; flex.bendV=0; flex.ready=true;
   g.traverse(o=>{ if(o.isMesh) o.castShadow=true; });
   return g;
@@ -752,6 +770,19 @@ function updateFlex(dt){
   flex.wingR.rotation.z= a;     // right tip up
   flex.wingL.rotation.z=-a;     // left tip up
   if(flex.spoilerR){ const sd=-brake*1.15; flex.spoilerR.rotation.x=sd; flex.spoilerL.rotation.x=sd; }   // airbrakes pop up with Space
+  // control surfaces follow the pilot inputs (cosmetic), smoothed for a mechanical feel
+  const sm=clamp(dt*9,0,1);
+  flex.sAil =(flex.sAil ||0)+(clamp(horizontalInput,-1,1)-(flex.sAil ||0))*sm;
+  flex.sElev=(flex.sElev||0)+(clamp(verticalInput,  -1,1)-(flex.sElev||0))*sm;
+  flex.sRud =(flex.sRud ||0)+(clamp(yawInput,       -1,1)-(flex.sRud ||0))*sm;
+  if(flex.ailR){ flex.ailR.rotation.x=0.5*flex.sAil; flex.ailL.rotation.x=-0.5*flex.sAil; }   // ailerons antisymmetric (roll into the bank)
+  if(flex.elev)   flex.elev.rotation.x=-0.42*flex.sElev;                                       // elevator (pitch — TE up = nose up)
+  if(flex.rudder) flex.rudder.rotation.y=0.5*flex.sRud;                                        // rudder (yaw — TE toward the turn)
+  // jet boost flame (Shift)
+  boostS += ((boosting?1:0)-boostS)*clamp(dt*8,0,1);
+  if(flex.jet){ const vis=boostS>0.02; flex.jet.visible=vis;
+    if(vis){ flex.jet.material.opacity=boostS*0.85; const fl=0.85+0.25*Math.sin(simTime*45);
+      flex.jet.scale.set(0.7+boostS*0.5, 0.7+boostS*0.5, (0.5+boostS*1.8)*fl); } }
 }
 
 function smoothstep01(a,b,x){ x=clamp((x-a)/(b-a),0,1); return x*x*(3-2*x); }
@@ -790,6 +821,8 @@ function updateBrakeFX(dt){
    Camera-facing ribbon from each wingtip. Profile along the trail: thin & faint where it leaves the
    tip, widening & strengthening downstream, then fading at the far tail. Attaches to the bowing tip. */
 let trailsOn=prefB('trails',true);
+let trailMode=clamp(Math.round(prefN('trailmode',1)),1,5);   // 1 wavy ribbon · 2 vapor · 3 helix · 4 dashes · 5 sparks
+const TRAIL_NAMES={1:'волнистая лента',2:'пар / клочья',3:'двойная спираль',4:'пунктир',5:'частицы'};
 const TRAIL_N=46, HALF_SPAN=CLASSIC.span/2;
 const trW=new Float32Array(TRAIL_N), trA=new Float32Array(TRAIL_N);   // static width/alpha vs position
 for(let i=0;i<TRAIL_N;i++){ const u=(TRAIL_N-1-i)/(TRAIL_N-1);        // u: 0 at tip (newest) -> 1 at oldest
@@ -811,34 +844,86 @@ function makeTrail(){
   return {cpos,vpos,geo,mat,mesh};
 }
 const trailR=makeTrail(), trailL=makeTrail();
-const _tip=new THREE.Vector3(), _tan=new THREE.Vector3(), _vd=new THREE.Vector3(), _sd=new THREE.Vector3(), _fb=new THREE.Vector3(0,0,1);
+const _tip=new THREE.Vector3(), _tan=new THREE.Vector3(), _vd=new THREE.Vector3(), _sd=new THREE.Vector3(), _fb=new THREE.Vector3(0,0,1), _uph=new THREE.Vector3();
 function wingTipLocal(sign,out){ const a=flex.dih+(flex.bend||0);          // follow the bowing tip
   return out.set(sign*(0.45+HALF_SPAN*Math.cos(a)), CLASSIC.wingY+HALF_SPAN*Math.sin(a), CLASSIC.wingZ+0.2); }
 function rebuildRibbon(tr){
-  const c=tr.cpos, v=tr.vpos, N=TRAIL_N, cam=camera.position;
-  for(let i=0;i<N;i++){ const o=i*3;
+  const c=tr.cpos, v=tr.vpos, N=TRAIL_N, cam=camera.position, t=simTime;
+  for(let i=0;i<N;i++){ const o=i*3, a=i*6;
     const p=(i>0?i-1:i)*3, q=(i<N-1?i+1:i)*3;
     _tan.set(c[q]-c[p], c[q+1]-c[p+1], c[q+2]-c[p+2]);
     if(_tan.lengthSq()<1e-8) _tan.copy(_fb); else { _tan.normalize(); _fb.copy(_tan); }
     _vd.set(cam.x-c[o], cam.y-c[o+1], cam.z-c[o+2]);
     _sd.crossVectors(_tan,_vd); if(_sd.lengthSq()<1e-8) _sd.set(1,0,0); else _sd.normalize();
-    const w=trW[i], a=i*6;
-    v[a]=c[o]+_sd.x*w;   v[a+1]=c[o+1]+_sd.y*w; v[a+2]=c[o+2]+_sd.z*w;
-    v[a+3]=c[o]-_sd.x*w; v[a+4]=c[o+1]-_sd.y*w; v[a+5]=c[o+2]-_sd.z*w;
+    let w=trW[i];
+    if(trailMode===3){                       // double helix: two strands spiral around the core
+      _uph.crossVectors(_tan,_sd);
+      const ph=i*0.85, cw=Math.cos(ph)*w*1.4, sw=Math.sin(ph)*w*1.4;
+      const ox=_sd.x*cw+_uph.x*sw, oy=_sd.y*cw+_uph.y*sw, oz=_sd.z*cw+_uph.z*sw;
+      v[a]=c[o]+ox; v[a+1]=c[o+1]+oy; v[a+2]=c[o+2]+oz;
+      v[a+3]=c[o]-ox; v[a+4]=c[o+1]-oy; v[a+5]=c[o+2]-oz; continue;
+    }
+    let cx=c[o], cy=c[o+1], cz=c[o+2];
+    if(trailMode===1){                       // wavy ribbon: snake the centreline + breathe the width
+      const wob=(Math.sin(i*0.8+t*6.0)+0.6*Math.sin(i*0.31-t*3.7))*0.6;
+      cx+=_sd.x*wob; cy+=_sd.y*wob; cz+=_sd.z*wob;
+      w*=0.6+0.55*Math.abs(Math.sin(i*0.5+t*2.2));
+    }
+    v[a]=cx+_sd.x*w;   v[a+1]=cy+_sd.y*w; v[a+2]=cz+_sd.z*w;
+    v[a+3]=cx-_sd.x*w; v[a+4]=cy-_sd.y*w; v[a+5]=cz-_sd.z*w;
   }
   tr.geo.attributes.position.needsUpdate=true;
 }
 function seedTrail(tr,sign,rp,rq){ wingTipLocal(sign,_tip).applyQuaternion(rq).add(rp);
   for(let i=0;i<TRAIL_N;i++){ tr.cpos[i*3]=_tip.x; tr.cpos[i*3+1]=_tip.y; tr.cpos[i*3+2]=_tip.z; } rebuildRibbon(tr); }
-function updateTrails(rp,rq){
-  const op = trailsOn ? clamp((Math.abs(glider.gload)-1.2)*0.55,0,0.9) : 0;   // vortices appear under G (turns/pulls)
-  trailR.mat.uniforms.uOpacity.value=op; trailL.mat.uniforms.uOpacity.value=op;
+// ---- particle trail (modes 2 vapor / 5 sparks): world-space soft sprites shed off the tips ----
+const TRP_N=150;
+const trpPos=new Float32Array(TRP_N*3), trpVel=new Float32Array(TRP_N*3), trpLife=new Float32Array(TRP_N), trpAlf=new Float32Array(TRP_N);
+for(let i=0;i<TRP_N;i++) trpLife[i]=2;                       // start dead
+const _trpTex=(()=>{ const cv=document.createElement('canvas'); cv.width=cv.height=64; const g2=cv.getContext('2d');
+  const gr=g2.createRadialGradient(32,32,0,32,32,32); gr.addColorStop(0,'rgba(255,255,255,0.95)'); gr.addColorStop(0.5,'rgba(255,255,255,0.32)'); gr.addColorStop(1,'rgba(255,255,255,0)');
+  g2.fillStyle=gr; g2.fillRect(0,0,64,64); return new THREE.CanvasTexture(cv); })();
+const trpGeo=new THREE.BufferGeometry();
+trpGeo.setAttribute('position',new THREE.BufferAttribute(trpPos,3));
+trpGeo.setAttribute('aLife',new THREE.BufferAttribute(trpAlf,1));
+const trpMat=new THREE.ShaderMaterial({ transparent:true, depthWrite:false, fog:false,
+  uniforms:{ uTex:{value:_trpTex}, uColor:{value:new THREE.Color(0xe6eef5)}, uOpacity:{value:0}, uSize:{value:5.0} },
+  vertexShader:`attribute float aLife; varying float vL; uniform float uSize; void main(){ vL=aLife; vec4 mv=modelViewMatrix*vec4(position,1.0); gl_PointSize=uSize*(1.0-0.35*aLife)*(320.0/max(1.0,-mv.z)); gl_Position=projectionMatrix*mv; }`,
+  fragmentShader:`uniform sampler2D uTex; uniform vec3 uColor; uniform float uOpacity; varying float vL; void main(){ float a=(1.0-vL)*uOpacity*texture2D(uTex,gl_PointCoord).a; if(a<0.01) discard; gl_FragColor=vec4(uColor,a); }`});
+const trpMesh=new THREE.Points(trpGeo,trpMat); trpMesh.frustumCulled=false; trpMesh.renderOrder=3; trpMesh.visible=false; scene.add(trpMesh);
+let _trpHead=0;
+function spawnTrp(x,y,z,mode){ const i=_trpHead; _trpHead=(_trpHead+1)%TRP_N; const o=i*3, sp=mode===5?3.2:1.0;
+  trpPos[o]=x; trpPos[o+1]=y; trpPos[o+2]=z;
+  trpVel[o]=(Math.random()-0.5)*sp; trpVel[o+1]=-0.4-Math.random()*0.9; trpVel[o+2]=(Math.random()-0.5)*sp; trpLife[i]=0; }
+function updateTrailPoints(dt,mode){
+  trpMat.uniforms.uSize.value=mode===5?2.0:5.5; trpMat.uniforms.uOpacity.value=mode===5?0.85:0.6;
+  const rate=mode===5?2.0:0.9;
+  for(let i=0;i<TRP_N;i++){ if(trpLife[i]>=1){ trpAlf[i]=1; continue; } const o=i*3;
+    trpPos[o]+=trpVel[o]*dt; trpPos[o+1]+=trpVel[o+1]*dt; trpPos[o+2]+=trpVel[o+2]*dt;
+    trpLife[i]+=rate*dt; trpAlf[i]=clamp(trpLife[i],0,1); }
+  trpGeo.attributes.position.needsUpdate=true; trpGeo.attributes.aLife.needsUpdate=true;
+}
+function updateTrails(rp,rq,dt){
+  dt=Math.min(dt||FIXED,0.05);
+  const g=Math.abs(glider.gload), emit=trailsOn && g>1.2;
+  const op = emit ? clamp((g-1.2)*0.55,0,0.9) : 0;                // vortices appear under G (turns/pulls)
+  const ribbon=(trailMode===1||trailMode===3||trailMode===4);
+  trailR.mesh.visible=trailL.mesh.visible=ribbon; trpMesh.visible=!ribbon;
   for(const [tr,sign] of [[trailR,1],[trailL,-1]]){
     wingTipLocal(sign,_tip).applyQuaternion(rq).add(rp);
     tr.cpos.copyWithin(0,3); const n=tr.cpos.length; tr.cpos[n-3]=_tip.x; tr.cpos[n-2]=_tip.y; tr.cpos[n-1]=_tip.z;
-    rebuildRibbon(tr);
+    if(ribbon){ tr.mat.uniforms.uOpacity.value=op; rebuildRibbon(tr);
+      const va=tr.geo.attributes.aAlpha.array;
+      if(trailMode===4){ const t=simTime*6.5; for(let i=0;i<TRAIL_N;i++){ const u=(TRAIL_N-1-i)/(TRAIL_N-1); const d=smoothstep01(0.35,0.6,0.5+0.5*Math.sin(u*40-t)); va[i*2]=va[i*2+1]=trA[i]*d; } }
+      else { for(let i=0;i<TRAIL_N;i++){ va[i*2]=va[i*2+1]=trA[i]; } }
+      tr.geo.attributes.aAlpha.needsUpdate=true;
+    } else if(emit){ const cnt=trailMode===5?3:1; for(let k=0;k<cnt;k++) spawnTrp(_tip.x,_tip.y,_tip.z,trailMode); }
   }
+  if(!ribbon) updateTrailPoints(dt,trailMode);
 }
+function setTrailMode(m){ trailMode=clamp(Math.round(m),1,5); prefSet('trailmode',trailMode);
+  const el=document.getElementById('trailpick'); if(el){ el.textContent='След '+trailMode+'/5 · '+TRAIL_NAMES[trailMode]; el.classList.remove('hidden');
+    clearTimeout(setTrailMode._t); setTrailMode._t=setTimeout(()=>el.classList.add('hidden'),2600); } }
 
 /* ===================== NEAR-MISS FX (C1) + TERRAIN CRASH (G2) ===================== */
 let nearMiss=0, fxOn=prefB('fx',true), crashOn=prefB('crash',false);   // crash into terrain OFF by default
@@ -857,6 +942,8 @@ function crash(){ if(state!=='flying') return; state='crashed'; silenceAudio(); 
 /* ===================== INPUT (keyboard) ===================== */
 const keys={}; let sens=1, invert=false, state='menu', simTime=0, spawnY=0;
 let rawH=0, rawV=0, rawY=0, horizontalInput=0, verticalInput=0, yawInput=0;
+let boosting=false, boostS=0;            // Shift = arcade jet boost (unlimited)
+const BOOST_ACCEL_G=4.0;                  // thrust along the nose, in g's (strong arcade)
 let inputOverride=null;             // headless
 addEventListener('keydown',e=>{ if(e.target&&e.target.tagName==='INPUT') return;   // typing in seed field: ignore game keys
   if(guideOpen){ if(e.code==='Escape'||e.code==='KeyH'){ e.preventDefault(); closeGuide(); } return; }   // guide modal eats keys
@@ -865,6 +952,7 @@ addEventListener('keydown',e=>{ if(e.target&&e.target.tagName==='INPUT') return;
   if(e.code==='KeyR'){ if(state!=='menu') startFlight(); }
   else if(e.code==='KeyM'){ setAudioOn(!audioOn); }
   else if(e.code==='KeyH'){ openGuide(); }
+  else if(e.code==='Digit1'||e.code==='Digit2'||e.code==='Digit3'||e.code==='Digit4'||e.code==='Digit5'){ setTrailMode(+e.code.slice(5)); }   // pick wingtip-trail style
   else if(e.code==='Escape'){ if(state==='flying'||state==='paused') openSettings(); else if(state==='settings') resumeFlight(); }
   else if(e.code==='KeyP'){ if(state==='flying') pauseFreeze(); else if(state==='paused') resumeFlight(); }   // P: freeze-pause toggle
   else if(e.code==='Space'){ if(state==='menu'||state==='crashed') startFlight(); } });                       // Space held = airbrakes in flight
@@ -1010,6 +1098,7 @@ function readInput(){
   horizontalInput = rawH * sens;
   verticalInput   = rawV * sens * (invert?-1:1);
   yawInput        = rawY * sens;
+  boosting = !inputOverride && state==='flying' && (keys.ShiftLeft||keys.ShiftRight);
 }
 
 /* ===================== PHYSICS (own aerodynamics) ===================== */
@@ -1047,6 +1136,7 @@ function fixedStep(){
 
   _F.set(0,0,0);
   _F.y -= MASS*G;                                       // gravity
+  if(boosting) _F.addScaledVector(_f, MASS*G*BOOST_ACCEL_G);   // Shift: jet thrust along the nose (arcade climb)
 
   let alpha=0, beta=0, w=0;
   if (V>1e-3){
@@ -1152,7 +1242,7 @@ function updateCamera(dt, rpos, rq){
   _ml.lookAt(camera.position,_look,_cUp); _cq.setFromRotationMatrix(_ml);
   camera.quaternion.slerp(_cq, 1-Math.exp(-dt*((dragging||orbAmt>0.01)?9.0:2.2)));   // crisp aim while orbiting, smooth otherwise
   const sn=clamp(invLerp(SPD_LO,SPD_HI,glider.gndspeed),0,1);
-  const fov=70+sn*16; camera.fov+=(fov-camera.fov)*Math.min(1,dt*4); camera.updateProjectionMatrix();
+  const fov=70+sn*16+boostS*12; camera.fov+=(fov-camera.fov)*Math.min(1,dt*4); camera.updateProjectionMatrix();   // boost punches FOV for speed feel
   document.getElementById('vign').style.opacity=Math.max(0,(sn-0.5))*0.8;   // speed vignette only — near-miss is audio-only
 }
 
@@ -1387,6 +1477,7 @@ let audioCtx=null, windGain=null, windFilt=null, audioOn=prefB('sound',true);
 let varioOn=prefB('vario',false);   // variometer beep OFF by default
 let varioOsc=null, varioGain=null, beepPhase=0;
 let rumbleFilt=null, rumbleGain=null, howlFilt=null, howlGain=null, buffFilt=null, buffGain=null, buffLFOGain=null;   // E1 sound juice
+let jetFilt=null, jetGain=null;   // Shift jet-boost roar
 function initAudio(){
   try{
     if(audioCtx){ audioCtx.resume&&audioCtx.resume(); return; }
@@ -1409,6 +1500,10 @@ function initAudio(){
     howlFilt=audioCtx.createBiquadFilter(); howlFilt.type='bandpass'; howlFilt.frequency.value=560; howlFilt.Q.value=7;
     howlGain=audioCtx.createGain(); howlGain.gain.value=0;
     src.connect(howlFilt); howlFilt.connect(howlGain); howlGain.connect(audioCtx.destination);
+    // jet boost roar — broadband filtered noise that swells while boosting
+    jetFilt=audioCtx.createBiquadFilter(); jetFilt.type='bandpass'; jetFilt.frequency.value=850; jetFilt.Q.value=1.1;
+    jetGain=audioCtx.createGain(); jetGain.gain.value=0;
+    src.connect(jetFilt); jetFilt.connect(jetGain); jetGain.connect(audioCtx.destination);
     // E1 stall buffet — rough band of noise pulsed by an ~18 Hz LFO when the wing stalls
     buffFilt=audioCtx.createBiquadFilter(); buffFilt.type='bandpass'; buffFilt.frequency.value=190; buffFilt.Q.value=1.1;
     buffGain=audioCtx.createGain(); buffGain.gain.value=0;
@@ -1440,6 +1535,7 @@ function updateAudio(){
   howlFilt.frequency.setTargetAtTime(430+sp*2.0+enc*280, now, 0.15);
   // E1: stall buffet (LFO depth on the buffet band)
   buffLFOGain.gain.setTargetAtTime(on*clamp((glider.stall-0.35)/0.4,0,1)*0.07, now, 0.05);
+  if(jetGain){ jetGain.gain.setTargetAtTime(on*0.17*boostS, now, 0.04); jetFilt.frequency.setTargetAtTime(680+sp*1.4, now, 0.06); }
 }
 function updateVarioSound(vario, dt){   // vario in m/s (vel.y*0.1)
   if(!audioCtx||audioCtx.state!=='running'||!varioGain) return;
@@ -1458,7 +1554,7 @@ function updateVarioSound(vario, dt){   // vario in m/s (vel.y*0.1)
 function silenceAudio(){    // on pause: fade everything out so nothing hangs while frozen
   if(!audioCtx||!windGain) return; const now=audioCtx.currentTime;
   windGain.gain.setTargetAtTime(0,now,0.05);
-  for(const g of [varioGain,rumbleGain,howlGain,buffLFOGain]) if(g) g.gain.setTargetAtTime(0,now,0.05);
+  for(const g of [varioGain,rumbleGain,howlGain,buffLFOGain,jetGain]) if(g) g.gain.setTargetAtTime(0,now,0.05);
 }
 
 /* ===================== E2 — music player (streamed CC0 / CC-BY tracks) ===================== */
@@ -1514,7 +1610,7 @@ function loop(now){
   if(!previewMode){ gliderGroup.position.copy(_rp); gliderGroup.quaternion.copy(_rq);
     updateCamera(frame||FIXED, _rp, _rq); }
   updateFlex(frame||FIXED);
-  if(state==='flying') updateTrails(_rp,_rq); else { trailR.mat.uniforms.uOpacity.value=0; trailL.mat.uniforms.uOpacity.value=0; }
+  if(state==='flying') updateTrails(_rp,_rq,frame||FIXED); else { trailR.mat.uniforms.uOpacity.value=0; trailL.mat.uniforms.uOpacity.value=0; trpMat.uniforms.uOpacity.value=0; }
   updateBrakeFX(frame||FIXED);
   sky.position.copy(camera.position);
   sun.position.copy(_rp).add(SUN_OFFSET); sun.target.position.copy(_rp); sun.target.updateMatrixWorld();
@@ -1546,6 +1642,9 @@ window.__swooper={
   windBase(x,z){ const v=windBaseAt(x,z,simTime,new THREE.Vector3()); return {x:+v.x.toFixed(1),z:+v.z.toFixed(1),mag:+Math.hypot(v.x,v.z).toFixed(1),ang:+(Math.atan2(v.x,-v.z)*DEG).toFixed(0)}; },
   cloudCount(){ let n=0; for(let i=0;i<cloudSize.array.length;i++) if(cloudSize.array[i]>0) n++; return n; },
   flexState(){ return {bend:+flex.bend.toFixed(4), wingR:+flex.wingR.rotation.z.toFixed(3), wingL:+flex.wingL.rotation.z.toFixed(3)}; },
+  surf(){ return { ail:+(flex.ailR?flex.ailR.rotation.x:0).toFixed(3), elev:+(flex.elev?flex.elev.rotation.x:0).toFixed(3), rud:+(flex.rudder?flex.rudder.rotation.y:0).toFixed(3) }; },
+  boostState(){ return { on:boosting, s:+boostS.toFixed(2), jetVis:flex.jet?flex.jet.visible:false }; },
+  trailMode(){ return trailMode; }, setTrailMode(m){ setTrailMode(m); }, trailVis(){ return { ribbonR:trailR.mesh.visible, pts:trpMesh.visible, ptsOp:+trpMat.uniforms.uOpacity.value.toFixed(2) }; },
   preview(dist=16,az=0.7,el=0.34,g=null){ if(g!=null) glider.gload=g; previewMode=true; gliderGroup.position.set(0,0,0); gliderGroup.quaternion.identity();
     camera.position.set(Math.sin(az)*Math.cos(el)*dist, Math.sin(el)*dist, Math.cos(az)*Math.cos(el)*dist); camera.lookAt(0,0.4,0); },
   varioGainNow(){ return varioGain?+varioGain.gain.value.toFixed(4):-1; },
