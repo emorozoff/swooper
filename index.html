@@ -17,12 +17,12 @@
   #i-hdg{ top:14px; left:50%; transform:translateX(-50%); }
   #i-asi{ left:26px; top:50%; transform:translateY(-50%); }
   #i-alt{ right:22px; top:50%; transform:translateY(-50%); }
-  #i-desc{ right:22px; top:50%; transform:translateY(-50%); }
-  .dpanel{ background:rgba(8,11,16,.42); border:1px solid rgba(223,230,236,.25); border-radius:4px; padding:9px 12px; font-family:ui-monospace,monospace; min-width:122px; }
-  .drow{ display:flex; align-items:baseline; gap:7px; margin:4px 0; }
-  .dlbl{ font-size:10px; letter-spacing:1px; color:#94a0ac; flex:1; text-transform:uppercase; }
-  .dval{ font-size:18px; font-weight:600; color:#eef2f6; }
-  .dun{ font-size:11px; color:#94a0ac; }
+  #i-desc{ top:16px; left:50%; transform:translateX(-50%); display:flex; gap:30px; align-items:stretch;
+    background:rgba(8,11,16,.4); border:1px solid rgba(223,230,236,.22); border-radius:6px; padding:9px 26px; font-family:ui-monospace,monospace; }
+  .dstat{ text-align:center; }
+  .dnum{ font-size:42px; font-weight:700; line-height:1; color:#eef2f6; text-shadow:0 1px 6px rgba(0,0,0,.55); }
+  .dcap{ font-size:10.5px; letter-spacing:1.5px; color:#94a0ac; margin-top:5px; text-transform:uppercase; }
+  .dsep{ width:1px; background:rgba(223,230,236,.18); }
   #i-vario{ right:108px; top:50%; transform:translateY(-50%); }
   #i-wind{ left:24px; bottom:22px; }
   /* instrument visibility is JS-driven (applyInstruments) from the settings toggles/presets */
@@ -141,11 +141,11 @@
   <div id="i-hdg" class="inst-wrap"></div>
   <div id="i-asi" class="inst-wrap"></div>
   <div id="i-alt" class="inst-wrap"></div>
-  <div id="i-desc" class="inst-wrap" style="display:none"><div class="dpanel">
-    <div class="drow"><span class="dlbl">AGL</span><span id="d-agl" class="dval">0</span><span class="dun">m</span></div>
-    <div class="drow"><span class="dlbl">глубина</span><span id="d-depth" class="dval">0</span><span class="dun">m</span></div>
-    <div class="drow"><span class="dlbl">очки</span><span id="d-score" class="dval">0</span></div>
-  </div></div>
+  <div id="i-desc" class="inst-wrap" style="display:none">
+    <div class="dstat"><div class="dnum" id="d-agl">0</div><div class="dcap">над землёй, м</div></div>
+    <div class="dsep"></div>
+    <div class="dstat"><div class="dnum" id="d-score">0</div><div class="dcap">очки · <span id="d-depth">0</span> м вниз</div></div>
+  </div>
   <div id="i-vario" class="inst-wrap"></div>
   <div id="i-wind" class="inst-wrap"></div>
   <div id="i-baro" class="inst-wrap"></div>
@@ -291,7 +291,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.81';
+const VERSION = '0.82';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -1445,9 +1445,9 @@ function applyInstruments(){ for(const k in INSTR_EL){ const el=document.getElem
 applyInstruments();
 // descent world: hide the lift-radar + MSL altimeter, show the AGL/depth/score panel instead
 const dAgl=document.getElementById('d-agl'), dDepth=document.getElementById('d-depth'), dScore=document.getElementById('d-score');
-if(DESCENT){ showInstr.i_map=false; applyInstruments();
-  const al=document.getElementById('i-alt'); if(al) al.style.display='none';
-  const dd=document.getElementById('i-desc'); if(dd) dd.style.display='block'; }
+if(DESCENT){ showInstr.i_map=false; showInstr.i_baro=false; applyInstruments();   // no radar/barograph in the dive
+  for(const id of ['i-alt','i-hdg','i-vario']){ const e=document.getElementById(id); if(e) e.style.display='none'; }   // no MSL altimeter, compass, or sink-rate
+  const dd=document.getElementById('i-desc'); if(dd) dd.style.display='flex'; }
 
 function updateHUD(dt){
   const dts=dt||FIXED, air0=glider.airspeed;
