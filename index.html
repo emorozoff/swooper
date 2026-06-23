@@ -72,6 +72,12 @@
   .setbtns{ display:flex; gap:12px; justify-content:center; margin-top:24px; }
   .play.ghost{ background:transparent; color:#e8b04b; }
   .sethint{ margin-top:16px; font-family:ui-monospace,monospace; font-size:11px; letter-spacing:1px; color:#eae4d6; opacity:.5; }
+  #touch{ position:fixed; inset:0; pointer-events:none; z-index:4; }
+  .tjoy{ position:fixed; width:116px; height:116px; margin:-58px 0 0 -58px; border-radius:50%;
+    border:2px solid rgba(232,176,75,.45); background:rgba(12,16,20,.22); display:none; }
+  .tjoy.on{ display:block; }
+  .tknob{ position:absolute; left:50%; top:50%; width:46px; height:46px; margin:-23px 0 0 -23px; border-radius:50%;
+    background:rgba(232,176,75,.55); border:1px solid rgba(255,255,255,.3); }
   #loaderr{ position:fixed; inset:0; display:none; align-items:center; justify-content:center; text-align:center; padding:30px; z-index:50; }
 </style>
 </head>
@@ -92,6 +98,10 @@
   <div id="stallw">⚠ STALL</div>
   <div id="fps"></div>
   <div id="tag">swooper</div>
+</div>
+<div id="touch">
+  <div id="tj-l" class="tjoy"><div class="tknob"></div></div>
+  <div id="tj-r" class="tjoy"><div class="tknob"></div></div>
 </div>
 
 <div class="overlay" id="menu">
@@ -149,7 +159,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.59';
+const VERSION = '0.60';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -736,13 +746,42 @@ addEventListener('blur',()=>{ for(const k in keys) keys[k]=false; dragging=false
 // setPointerCapture guarantees a pointerup/cancel even if released outside the window -> drag never sticks.
 const _cv=renderer.domElement;
 function endDrag(e){ dragging=false; if(e&&e.pointerId!=null&&_cv.hasPointerCapture&&_cv.hasPointerCapture(e.pointerId)){ try{ _cv.releasePointerCapture(e.pointerId); }catch(_){} } }
-_cv.addEventListener('pointerdown',e=>{ if(state==='flying'||state==='paused'){ dragging=true; _pmx=e.clientX; _pmy=e.clientY; try{ _cv.setPointerCapture(e.pointerId); }catch(_){} } });
+_cv.addEventListener('pointerdown',e=>{ if(e.pointerType==='touch') return;   // touch is handled by the on-screen joysticks
+  if(state==='flying'||state==='paused'){ dragging=true; _pmx=e.clientX; _pmy=e.clientY; try{ _cv.setPointerCapture(e.pointerId); }catch(_){} } });
 _cv.addEventListener('pointerup',endDrag);
 _cv.addEventListener('pointercancel',endDrag);
 addEventListener('pointermove',e=>{ if(!dragging) return;
   if(state!=='flying'&&state!=='paused'){ dragging=false; return; }                  // never keep dragging off the flight view
   camOrbitAz=clamp(camOrbitAz-(e.clientX-_pmx)*0.009,-3.4,3.4); camOrbitEl=clamp(camOrbitEl+(e.clientY-_pmy)*0.006,-1.1,1.1);   // ±195° az; el capped <1.15 to dodge the overhead gimbal
   _pmx=e.clientX; _pmy=e.clientY; camIdle=0; });
+// D3 mobile: floating dual joysticks. LEFT half = glider (roll/pitch), RIGHT half = camera orbit. Auto-shows on touch.
+const touch={ active:false, h:0, v:0 }; let tL=null, tR=null;
+const TJR=58, tjL=document.getElementById('tj-l'), tjR=document.getElementById('tj-r');
+function joyShow(el,x,y){ el.style.left=x+'px'; el.style.top=y+'px'; el.classList.add('on'); }
+function joyKnob(el,dx,dy){ el.firstElementChild.style.transform=`translate(${dx}px,${dy}px)`; }
+function joyHide(el){ el.classList.remove('on'); el.firstElementChild.style.transform='translate(0,0)'; }
+function joyDelta(el,t){ const b=el.getBoundingClientRect(); let dx=t.clientX-(b.left+b.width/2), dy=t.clientY-(b.top+b.height/2);
+  const r=Math.hypot(dx,dy); if(r>TJR){ dx*=TJR/r; dy*=TJR/r; } joyKnob(el,dx,dy); return {x:dx/TJR,y:dy/TJR}; }
+addEventListener('touchstart',e=>{
+  if(state!=='flying'&&state!=='paused') return;                      // let menu/settings buttons get the tap
+  for(const t of e.changedTouches){
+    if(t.clientX<innerWidth/2 && tL===null){ tL=t.identifier; touch.active=true; joyShow(tjL,t.clientX,t.clientY); joyDelta(tjL,t); }
+    else if(t.clientX>=innerWidth/2 && tR===null){ tR=t.identifier; joyShow(tjR,t.clientX,t.clientY); camIdle=0; }
+  }
+  e.preventDefault();
+},{passive:false});
+addEventListener('touchmove',e=>{
+  let used=false;
+  for(const t of e.changedTouches){
+    if(t.identifier===tL){ const d=joyDelta(tjL,t); touch.h=-clamp(d.x,-1,1); touch.v=clamp(d.y,-1,1); used=true; }
+    else if(t.identifier===tR){ const d=joyDelta(tjR,t); camOrbitAz=clamp(-d.x*3.0,-3.4,3.4); camOrbitEl=clamp(d.y*1.0,-1.1,1.1); camIdle=0; used=true; }
+  }
+  if(used) e.preventDefault();
+},{passive:false});
+function touchEnd(e){ for(const t of e.changedTouches){
+  if(t.identifier===tL){ tL=null; touch.active=false; touch.h=0; touch.v=0; joyHide(tjL); }
+  else if(t.identifier===tR){ tR=null; joyHide(tjR); } } }
+addEventListener('touchend',touchEnd); addEventListener('touchcancel',touchEnd);
 const menuEl=document.getElementById('menu'), pauseChip=document.getElementById('pausechip'), settingsEl=document.getElementById('settings');
 document.getElementById('play').onclick=startFlight;
 document.getElementById('ver').textContent='v'+VERSION;
@@ -812,6 +851,7 @@ function resumeFlight(){   // leave pause/settings, keep flying from where we le
 function readInput(){
   let tH, tV, tY;
   if (inputOverride){ tH=inputOverride.h; tV=inputOverride.v; tY=inputOverride.yaw||0; }
+  else if (touch.active){ tH=touch.h; tV=touch.v; tY=0; }            // on-screen left joystick
   else {
     tH=((keys.KeyA||keys.ArrowLeft)?1:0)-((keys.KeyD||keys.ArrowRight)?1:0); // left = roll/turn left
     tV=((keys.ArrowDown||keys.KeyS)?1:0)-((keys.ArrowUp||keys.KeyW)?1:0);    // down = nose up (default)
@@ -925,7 +965,7 @@ let camDistSmooth=60;                     // speed-based camera distance, eased 
 const camBase=new THREE.Vector3(NaN,0,0); // orbit-free smoothed follow position (re-inits on NaN)
 function updateCamera(dt, rpos, rq){
   // mouse-orbit idle auto-return: hold the look for ~1.2s after the last drag, then ease back to chase
-  if(dragging) camIdle=0; else { camIdle+=dt; if(camIdle>1.8){ const k=1-Math.exp(-dt*1.6);
+  if(dragging||tR!=null) camIdle=0; else { camIdle+=dt; if(camIdle>1.8){ const k=1-Math.exp(-dt*1.6);
     camOrbitAz-=camOrbitAz*k; camOrbitEl-=camOrbitEl*k; if(Math.abs(camOrbitAz)<1e-3)camOrbitAz=0; if(Math.abs(camOrbitEl)<1e-3)camOrbitEl=0; } }
   _cf.set(0,0,-1).applyQuaternion(rq);
   _cu2.set(0,1,0).applyQuaternion(rq);
@@ -1155,6 +1195,7 @@ function updateHUD(dt){
 let audioCtx=null, windGain=null, windFilt=null, audioOn=prefB('sound',true);
 let varioOn=prefB('vario',false);   // variometer beep OFF by default
 let varioOsc=null, varioGain=null, beepPhase=0;
+let rumbleFilt=null, rumbleGain=null, howlFilt=null, howlGain=null, buffFilt=null, buffGain=null, buffLFOGain=null;   // E1 sound juice
 function initAudio(){
   try{
     if(audioCtx){ audioCtx.resume&&audioCtx.resume(); return; }
@@ -1169,14 +1210,45 @@ function initAudio(){
     varioOsc=audioCtx.createOscillator(); varioOsc.type='sine'; varioOsc.frequency.value=600;
     varioGain=audioCtx.createGain(); varioGain.gain.value=0;
     varioOsc.connect(varioGain); varioGain.connect(audioCtx.destination); varioOsc.start();
+    // E1 ground rumble — deep low-pass noise that swells near the slope at speed
+    rumbleFilt=audioCtx.createBiquadFilter(); rumbleFilt.type='lowpass'; rumbleFilt.frequency.value=110; rumbleFilt.Q.value=0.8;
+    rumbleGain=audioCtx.createGain(); rumbleGain.gain.value=0;
+    src.connect(rumbleFilt); rumbleFilt.connect(rumbleGain); rumbleGain.connect(audioCtx.destination);
+    // E1 canyon howl — resonant band-pass that rises when terrain hems you in on both sides
+    howlFilt=audioCtx.createBiquadFilter(); howlFilt.type='bandpass'; howlFilt.frequency.value=560; howlFilt.Q.value=7;
+    howlGain=audioCtx.createGain(); howlGain.gain.value=0;
+    src.connect(howlFilt); howlFilt.connect(howlGain); howlGain.connect(audioCtx.destination);
+    // E1 stall buffet — rough band of noise pulsed by an ~18 Hz LFO when the wing stalls
+    buffFilt=audioCtx.createBiquadFilter(); buffFilt.type='bandpass'; buffFilt.frequency.value=190; buffFilt.Q.value=1.1;
+    buffGain=audioCtx.createGain(); buffGain.gain.value=0;
+    src.connect(buffFilt); buffFilt.connect(buffGain); buffGain.connect(audioCtx.destination);
+    const buffLFO=audioCtx.createOscillator(); buffLFO.type='square'; buffLFO.frequency.value=18;
+    buffLFOGain=audioCtx.createGain(); buffLFOGain.gain.value=0;
+    buffLFO.connect(buffLFOGain); buffLFOGain.connect(buffGain.gain); buffLFO.start();
   }catch(e){}
+}
+const _encR=new THREE.Vector3();
+function canyonEnclosure(){     // 0..1 — both lateral sides rise above the craft AND we're low-ish
+  const p=glider.pos, rl=Math.hypot(_f.x,_f.z)||1, ux=-_f.z/rl, uz=_f.x/rl, D=200;
+  const hL=terrainHeight(p.x-ux*D,p.z-uz*D)-p.y, hR=terrainHeight(p.x+ux*D,p.z+uz*D)-p.y;
+  const agl=p.y-terrainHeight(p.x,p.z);
+  return clamp(Math.min(hL,hR)/150,0,1)*clamp(1-agl/600,0,1);
 }
 function updateAudio(){
   if(!audioCtx||audioCtx.state!=='running'||!windGain) return;
   const sp=glider.airspeed, agl=glider.pos.y-terrainHeight(glider.pos.x,glider.pos.z);
-  const sn=clamp((sp-50)/240,0,1), prox=clamp(1-agl/700,0,1), now=audioCtx.currentTime;
-  windGain.gain.setTargetAtTime(audioOn?(0.03+0.17*sn*sn+0.07*prox+0.16*nearMiss):0, now, 0.08);   // near-miss whoosh swell
+  const sn=clamp((sp-50)/240,0,1), prox=clamp(1-agl/700,0,1), now=audioCtx.currentTime, on=audioOn?1:0;
+  windGain.gain.setTargetAtTime(on*(0.03+0.17*sn*sn+0.07*prox+0.16*nearMiss), now, 0.08);   // near-miss whoosh swell
   windFilt.frequency.setTargetAtTime(320+sp*4.2+prox*700+nearMiss*1100, now, 0.08);
+  // E1: deep ground rumble near the slope
+  rumbleGain.gain.setTargetAtTime(on*0.11*prox*prox*(0.4+0.6*sn), now, 0.1);
+  rumbleFilt.frequency.setTargetAtTime(70+sp*0.6, now, 0.1);
+  // E1: canyon howl when hemmed in
+  const enc=canyonEnclosure();
+  howlGain.gain.setTargetAtTime(on*0.06*enc*(0.3+0.7*sn), now, 0.15);
+  howlFilt.frequency.setTargetAtTime(430+sp*2.0+enc*280, now, 0.15);
+  // E1: stall buffet (LFO depth on the buffet band)
+  buffLFOGain.gain.setTargetAtTime(on*clamp((glider.stall-0.35)/0.4,0,1)*0.07, now, 0.05);
 }
 function updateVarioSound(vario, dt){   // vario in m/s (vel.y*0.1)
   if(!audioCtx||audioCtx.state!=='running'||!varioGain) return;
@@ -1194,7 +1266,8 @@ function updateVarioSound(vario, dt){   // vario in m/s (vel.y*0.1)
 }
 function silenceAudio(){    // on pause: fade everything out so nothing hangs while frozen
   if(!audioCtx||!windGain) return; const now=audioCtx.currentTime;
-  windGain.gain.setTargetAtTime(0,now,0.05); if(varioGain) varioGain.gain.setTargetAtTime(0,now,0.05);
+  windGain.gain.setTargetAtTime(0,now,0.05);
+  for(const g of [varioGain,rumbleGain,howlGain,buffLFOGain]) if(g) g.gain.setTargetAtTime(0,now,0.05);
 }
 
 /* ===================== LOOP ===================== */
@@ -1261,6 +1334,9 @@ window.__swooper={
   findThermal(){ for(let R=1700;R<16000;R+=1700)for(let a=0;a<16;a++){ const x=Math.round(Math.cos(a/16*6.28)*R/1700)*1700, z=Math.round(Math.sin(a/16*6.28)*R/1700)*1700, s=thermalStrength(x,z), g=terrainHeight(x,z); if(s>0.5&&g<2000) return {x,z,s:+s.toFixed(2),g:Math.round(g)}; } return null; },
   brakeNow(){ return +brake.toFixed(3); },
   hud(){ return { speedMS:+(glider.airspeed*MPS).toFixed(1), altM:+(glider.pos.y*MPS+ALT_BASE).toFixed(1), varioMS:+(glider.vel.y*MPS).toFixed(2) }; },
+  _touch(){ return { active:touch.active, h:+touch.h.toFixed(2), v:+touch.v.toFixed(2), tL, tR }; },
+  audioNodes(){ return { rumble:!!rumbleGain, howl:!!howlGain, buff:!!buffLFOGain, ctx:audioCtx?audioCtx.state:'none' }; },
+  enclosure(){ return +canyonEnclosure().toFixed(2); },
   gfxState(){ return { q:gfxQ, pr:+renderer.getPixelRatio().toFixed(2), shadows:renderer.shadowMap.enabled }; },
   setGfx(q){ setGfx(q); },
   thermState(){ return { scale:+thermalScale.toFixed(2), thresh:+thermThresh.toFixed(3), gain:+thermGain.toFixed(1) }; },
