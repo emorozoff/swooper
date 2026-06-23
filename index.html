@@ -226,7 +226,7 @@
       <button data-g="soar">Парение</button>
     </div>
     <div class="gpane on" id="gp-inst">
-      <div class="grow"><div class="gk">Скорость</div><div class="gv">воздушная скорость, m/s. <span class="gchip" style="background:#5aa35a"></span>зелёная зона — норма, <span class="gchip" style="background:#e0b552"></span>жёлтая (&gt;55) — повышенная скорость, <span class="gchip" style="background:#d9534f"></span>красная (&lt;25 или &gt;80) — низкая скорость / перегрузка.</div></div>
+      <div class="grow"><div class="gk">Скорость</div><div class="gv">воздушная скорость, m/s. <span class="gchip" style="background:#5aa35a"></span>зелёная (30–100) — норма, <span class="gchip" style="background:#e0b552"></span>жёлтая (20–30 / 100–120) — край, <span class="gchip" style="background:#d9534f"></span>красная (&lt;20 / &gt;120) — сваливание / перегрузка.</div></div>
       <div class="grow"><div class="gk">Высота</div><div class="gv">высота над уровнем моря, m. Цифра желтеет и краснеет, когда летишь низко над склоном.</div></div>
       <div class="grow"><div class="gk">AGL</div><div class="gv">высота над землёй (под альтиметром). Следи за ней, когда бреешь рельеф.</div></div>
       <div class="grow"><div class="gk">Вариометр</div><div class="gv">набор / снижение, m/s. <span class="gchip" style="background:#ffffff"></span>белая стрелка — сейчас, <span class="gchip" style="background:#8b95a1"></span>серая — полная энергия (с учётом скорости). Звук включается в настройках.</div></div>
@@ -279,7 +279,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.78';
+const VERSION = '0.79';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -874,7 +874,7 @@ function rebuildRibbon(tr){
     _vd.set(cam.x-c[o], cam.y-c[o+1], cam.z-c[o+2]);
     _sd.crossVectors(_tan,_vd); if(_sd.lengthSq()<1e-8) _sd.set(1,0,0); else _sd.normalize();
     _uph.crossVectors(_tan,_sd);                                   // up = perpendicular to tangent & side
-    const w=trW[i], ph=i*0.85+t*2.5, cw=Math.cos(ph)*w*1.5, sw=Math.sin(ph)*w*1.5;   // two strands spiral around the core
+    const w=trW[i], ph=i*0.45+t*2.0, cw=Math.cos(ph)*w*1.5, sw=Math.sin(ph)*w*1.5;   // two strands spiral around the core (looser winding)
     const ox=_sd.x*cw+_uph.x*sw, oy=_sd.y*cw+_uph.y*sw, oz=_sd.z*cw+_uph.z*sw;
     v[a]=c[o]+ox;   v[a+1]=c[o+1]+oy; v[a+2]=c[o+2]+oz;
     v[a+3]=c[o]-ox; v[a+4]=c[o+1]-oy; v[a+5]=c[o+2]-oz;
@@ -884,8 +884,8 @@ function rebuildRibbon(tr){
 function seedTrail(tr,sign,rp,rq){ wingTipLocal(sign,_tip).applyQuaternion(rq).add(rp);
   for(let i=0;i<TRAIL_N;i++){ tr.cpos[i*3]=_tip.x; tr.cpos[i*3+1]=_tip.y; tr.cpos[i*3+2]=_tip.z; } rebuildRibbon(tr); }
 function updateTrails(rp,rq,dt){
-  const g=Math.abs(glider.gload), emit=trailsOn && g>1.2;
-  const op = emit ? clamp((g-1.2)*0.5,0,0.7) : 0;                 // twin-helix vortex strands (appear under G)
+  const g=Math.abs(glider.gload), emit=trailsOn && g>1.8;        // appear only under harder G
+  const op = emit ? clamp((g-1.8)*0.3,0,0.35) : 0;               // twin-helix strands — half as opaque as before
   for(const [tr,sign] of [[trailR,1],[trailL,-1]]){
     wingTipLocal(sign,_tip).applyQuaternion(rq).add(rp);
     tr.cpos.copyWithin(0,3); const n=tr.cpos.length; tr.cpos[n-3]=_tip.x; tr.cpos[n-2]=_tip.y; tr.cpos[n-1]=_tip.z;
@@ -1267,11 +1267,11 @@ function updVtape(T,value){
     const maj=(((v%o.lab)+o.lab)%o.lab)===0;
     t.ln.setAttribute('x1',maj?T.tx1:T.tx1+6); t.ln.setAttribute('x2',T.tx2); t.ln.setAttribute('y1',y); t.ln.setAttribute('y2',y); t.ln.setAttribute('opacity',0.8);
     if(maj){ t.tx.textContent=v; t.tx.setAttribute('x',T.numX); t.tx.setAttribute('y',y+3.5); t.tx.setAttribute('opacity',0.92); } else t.tx.setAttribute('opacity',0);
-    if(t.bd){ const c=(v<o.bandLo||v>o.bandHi)?'#d9534f':v>o.bandMid?'#e0b552':'#5aa35a'; t.bd.setAttribute('y',y-px*st/2); t.bd.setAttribute('height',px*st+1); t.bd.setAttribute('fill',c); t.bd.setAttribute('opacity',0.92); }
+    if(t.bd){ const c=(v<o.bandLoR||v>o.bandHiR)?C_WARN:(v<o.bandLoY||v>o.bandHiY)?C_CAUTION:'#5aa35a'; t.bd.setAttribute('y',y-px*st/2); t.bd.setAttribute('height',px*st+1); t.bd.setAttribute('fill',c); t.bd.setAttribute('opacity',0.92); }
   }
   T.val.textContent=Math.round(value);
 }
-const asi=vtape('i-asi',{W:74,step:5,px:3.6,span:37,lab:20,unit:'m/s',bands:true,bandLo:25,bandMid:55,bandHi:80});   // stretched scale (10 m/s = 36px) for snappier needle; red below 25 (stall) and above 80 (Vne)
+const asi=vtape('i-asi',{W:74,step:5,px:3.6,span:37,lab:20,unit:'m/s',bands:true,bandLoR:20,bandLoY:30,bandHiY:100,bandHiR:120});   // green 30-100, amber 20-30 & 100-120, red <20 (stall) & >120 (Vne)
 const alti=vtape('i-alt',{W:80,step:50,px:0.16,span:950,lab:200,unit:'m'});
 // AGL (height above ground) readout under the altitude box — colours warn near terrain (swoop cue)
 E('rect',{x:3,y:alti.cy+11,width:alti.W-6,height:15,rx:2,fill:C_INK},alti.svg);   // full-opacity backing so tape ticks don't bleed through
