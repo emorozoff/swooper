@@ -174,7 +174,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.61';
+const VERSION = '0.62';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -373,11 +373,17 @@ function windBaseAt(x,z,t,out){
 }
 // thermals: static source strength 0..1 (smoothstep core -> wider & catchable)
 // + gentle time wobble. Drives lift, GROUND TINT and CLOUD placement alike.
-const RIDGE_GAIN=0.6, RIDGE_H=2400, THERMAL_GAIN=52, THERMAL_H=8000, THFF=0.0002, THERMAL_THRESH=0.30;   // THFF lower -> bigger thermal zones
+const RIDGE_GAIN=0.6, RIDGE_H=2400, THERMAL_GAIN=52, THERMAL_H=8000, THFF=0.00015, THERMAL_THRESH=0.30;   // THFF lower -> bigger thermal zones
 // thermals slider (weak<->strong): scales BOTH the lift (thermGain) and zone size/frequency (lower threshold = bigger, more zones)
 let thermalScale=clamp(prefN('therm',1),0.3,1.8);
 let thermThresh=clamp(THERMAL_THRESH-(thermalScale-1)*0.18, 0.08, 0.55), thermGain=THERMAL_GAIN*thermalScale;
-function thermalStrength(x,z){ const n=vnoise(x*THFF+3.1,z*THFF+1.7); const c=clamp((n-thermThresh)/(1-thermThresh),0,1); return c*c*(3-2*c); }
+function thermalStrength(x,z){
+  const a=x*THFF, b=z*THFF;
+  const u=a + Math.sin(b*1.7+1.3)*0.6 + Math.sin(b*3.3+4.0)*0.25;     // domain warp -> organic clusters, not a grid
+  const v=b + Math.sin(a*1.9+2.7)*0.6 + Math.cos(a*3.1+0.5)*0.25;
+  const n=vnoise(u+3.1,v+1.7)*0.82 + vnoise(u*2.5+11.0,v*2.5+7.0)*0.18;   // 2 octaves -> irregular cores
+  const c=clamp((n-thermThresh)/(1-thermThresh),0,1); return c*c*(3-2*c);
+}
 function thermalAt(x,z,t){ return thermalStrength(x,z)*(0.80+0.20*Math.sin(t*0.2 + x*0.0013 + z*0.0011)); }
 const _wbLift=new THREE.Vector3();
 function windLift(x,y,z,t){
@@ -418,8 +424,8 @@ function setColor(col,o,h,ny,wx,wz){
   // THERMAL TINT: sun-baked dark/warm patches mark the strong rising columns
   // (those that grow a cumulus above) -> look down = dark patch, look up = cloud.
   const th=thermalStrength(wx,wz);
-  if(th>0.15){ const k=clamp((th-0.15)*1.55,0,0.74)*(1-snow*0.9);   // bigger footprint + darker, more readable patches
-    r+=(0.13-r)*k; g+=(0.078-g)*k; b+=(0.045-b)*k; }
+  if(th>0.10){ const k=clamp((th-0.10)*1.8,0,0.9)*(1-snow*0.85);     // much darker & wider — clearly readable from the air
+    r+=(0.06-r)*k; g+=(0.04-g)*k; b+=(0.028-b)*k; }
   col[o]=r; col[o+1]=g; col[o+2]=b;
 }
 let rimUniforms=null;
@@ -1175,7 +1181,7 @@ const mcStf=E('text',{x:MCW-6,y:33,'text-anchor':'end','font-size':14,fill:C_AMB
 function updMC(airmassMS){ mcStf.textContent=Math.round(clamp(40+(MC_SETTING-airmassMS)*3.2, 28, 95)); }   // faster in sink, slower in lift
 
 // ---- minimap: heading-up, thermal cores as dots ----
-const MAP=98, MAPC=MAP/2, MAP_RANGE=2600, MAP_DOTS=25;
+const MAP=98, MAPC=MAP/2, MAP_RANGE=3000, MAP_DOTS=40;
 const mapSvg=E('svg',{viewBox:`0 0 ${MAP} ${MAP}`,width:MAP,height:MAP,class:'inst'},document.getElementById('i-map'));
 E('circle',{cx:MAPC,cy:MAPC,r:MAPC-1,fill:C_BG,stroke:C_CREAM,'stroke-width':1,'stroke-opacity':0.4},mapSvg);
 const mapDots=[]; for(let i=0;i<MAP_DOTS;i++) mapDots.push(E('circle',{r:2.4,fill:'#e2b15a',opacity:0},mapSvg));
@@ -1184,13 +1190,18 @@ E('polygon',{points:`${MAPC},${MAPC-6} ${MAPC-4},${MAPC+5} ${MAPC+4},${MAPC+5}`,
 function updMap(hdg){
   const hr=hdg*Math.PI/180, sh=Math.sin(hr), ch=Math.cos(hr), rr=MAPC-6;
   mapN.setAttribute('x',(MAPC-sh*(MAPC-9)).toFixed(1)); mapN.setAttribute('y',(MAPC-ch*(MAPC-9)+3).toFixed(1));   // north, heading-up
-  const gx=glider.pos.x, gz=glider.pos.z, step=MAP_RANGE/2; let d=0;
-  for(let iz=-2;iz<=2 && d<MAP_DOTS;iz++) for(let ix=-2;ix<=2 && d<MAP_DOTS;ix++){
-    const rx=ix*step, rz=iz*step, s=thermalStrength(gx+rx, gz+rz);
-    if(s>0.45){
+  // sample a WORLD-aligned grid (snapped to GS): cell centres stay put in the world, so as you fly toward a
+  // thermal its dot slides smoothly toward the centre (the old glider-relative grid kept dots in fixed slots).
+  const gx=glider.pos.x, gz=glider.pos.z, GS=750, R2=MAP_RANGE*MAP_RANGE; let d=0;
+  const cx0=Math.round(gx/GS), cz0=Math.round(gz/GS), R=Math.ceil(MAP_RANGE/GS);
+  for(let cz=cz0-R; cz<=cz0+R && d<MAP_DOTS; cz++) for(let cx=cx0-R; cx<=cx0+R && d<MAP_DOTS; cx++){
+    const wx=cx*GS, wz=cz*GS, rx=wx-gx, rz=wz-gz;
+    if(rx*rx+rz*rz>R2) continue;
+    const s=thermalStrength(wx,wz);
+    if(s>0.5){
       const along=rx*sh - rz*ch, cross=rx*ch + rz*sh;            // rotate world offset into heading-up frame
       const px=MAPC+(cross/MAP_RANGE)*rr, py=MAPC-(along/MAP_RANGE)*rr;
-      if(Math.hypot(px-MAPC,py-MAPC)<=rr){ const dt2=mapDots[d++]; dt2.setAttribute('cx',px.toFixed(1)); dt2.setAttribute('cy',py.toFixed(1)); dt2.setAttribute('r',(2+s*2.6).toFixed(1)); dt2.setAttribute('opacity',(0.3+s*0.6).toFixed(2)); }
+      const dt2=mapDots[d++]; dt2.setAttribute('cx',px.toFixed(1)); dt2.setAttribute('cy',py.toFixed(1)); dt2.setAttribute('r',(1.8+s*2.4).toFixed(1)); dt2.setAttribute('opacity',(0.35+s*0.55).toFixed(2));
     }
   }
   for(;d<MAP_DOTS;d++) mapDots[d].setAttribute('opacity',0);
