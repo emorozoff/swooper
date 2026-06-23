@@ -19,7 +19,7 @@
   #i-alt{ right:22px; top:50%; transform:translateY(-50%); }
   #i-vario{ right:108px; top:50%; transform:translateY(-50%); }
   #i-wind{ left:24px; bottom:22px; }
-  #i-wind,#i-baro,#i-g,#i-slip,#i-mc{ display:none; }   /* off by default — toggles come next */
+  #i-baro,#i-g,#i-slip,#i-mc{ display:none; }   /* off by default — toggles come next */
   #i-baro{ left:50%; bottom:16px; transform:translateX(-50%); transform-origin:bottom center; }
   /* the 570px barograph would collide with the side gauges on narrow windows -> shrink, then hide */
   @media (max-width:1040px){ #i-baro{ transform:translateX(-50%) scale(0.66); } }
@@ -178,7 +178,7 @@
 import * as THREE from 'three';
 window.__swooper = {};
 try {
-const VERSION = '0.71';
+const VERSION = '0.72';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -1041,7 +1041,7 @@ const NS='http://www.w3.org/2000/svg';
 function E(t,a,p){ const e=document.createElementNS(NS,t); for(const k in a)e.setAttribute(k,a[k]); if(p)p.appendChild(e); return e; }
 // theme v0.71 — minimal/realistic "mono-glass" HUD: near-white lines, cool-grey scales, glass panels.
 // colour is FUNCTIONAL only (green/red speed arc, red terrain/stall — set per-instrument); radar keeps red/blue.
-const C_AMBER='#eaf0f4', C_INK='#0a0d12', C_CREAM='#94a0ac', C_BG='rgba(8,11,16,0.28)', AH_SIGN=1;
+const C_AMBER='#eaf0f4', C_INK='#0a0d12', C_CREAM='#d3dae1', C_BG='rgba(8,11,16,0.28)', AH_SIGN=1;
 const stallW=document.getElementById('stallw');
 const MONO='ui-monospace,SFMono-Regular,Menlo,monospace';
 const SANS='-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif';
@@ -1056,9 +1056,6 @@ const hT=[]; for(let i=0;i<74;i++){ const ln=E('line',{stroke:C_CREAM,'stroke-wi
 E('polygon',{points:`${HW/2-6},16 ${HW/2+6},16 ${HW/2},24`,fill:C_AMBER},hsvg);
 E('rect',{x:HW/2-23,y:43,width:46,height:14,rx:3,fill:C_INK,stroke:C_AMBER,'stroke-width':1},hsvg);
 const hVal=E('text',{x:HW/2,y:53,'text-anchor':'middle','font-size':12.5,fill:C_AMBER,'font-weight':600,'font-family':MONO},hsvg);
-const wBug=E('polygon',{points:`${HW/2},20 ${HW/2-5},13 ${HW/2+5},13`,fill:C_AMBER,opacity:0.85},hsvg);   // wind bug rides the strip at the wind bearing
-const wTxt=E('text',{x:HW/2+92,y:53,'text-anchor':'start','font-size':11,fill:C_CREAM,'font-family':MONO,opacity:0.85},hsvg);
-const _wbHdg=new THREE.Vector3();
 function updHdg(hdg){
   for(let i=0;i<hT.length;i++){
     const d=Math.floor((hdg-90)/5)*5+i*5, x=HW/2+(d-hdg)*HPX, t=hT[i];
@@ -1068,11 +1065,6 @@ function updHdg(hdg){
     if(maj){ const dd=((d%360)+360)%360; t.tx.textContent=dd===0?'N':dd===90?'E':dd===180?'S':dd===270?'W':''+dd; t.tx.setAttribute('x',x); t.tx.setAttribute('y',41); t.tx.setAttribute('opacity',0.95); } else t.tx.setAttribute('opacity',0);
   }
   hVal.textContent=(''+Math.round(((hdg%360)+360)%360)).padStart(3,'0');
-  windSteeredAt(glider.pos.x, glider.pos.z, glider.pos.y, simTime, _wbHdg);   // wind merged into the heading strip
-  const wmag=Math.hypot(_wbHdg.x,_wbHdg.z), wb=Math.atan2(_wbHdg.x,-_wbHdg.z)*DEG;
-  let off=(((wb-hdg)%360)+540)%360-180, bx=HW/2+off*HPX, ons=bx>10&&bx<HW-10;
-  bx=clamp(bx,10,HW-10); wBug.setAttribute('points',`${bx},20 ${bx-5},13 ${bx+5},13`); wBug.setAttribute('opacity',ons?0.85:0.4);
-  wTxt.textContent='ветер '+Math.round(wmag*MPS);
 }
 
 // ---- vertical tape (airspeed / altitude) ----
@@ -1107,7 +1099,7 @@ const alti=vtape('i-alt',{W:80,step:50,px:0.16,span:950,lab:200,unit:'m'});
 const VW=64,VH=214,VCY=94,VPX=12.5,VSB=VH-42;   // VSB = scale-background bottom
 const vsvg=E('svg',{viewBox:`0 0 ${VW} ${VH}`,width:VW,height:VH,class:'inst'},document.getElementById('i-vario'));
 E('rect',{x:8,y:16,width:VW-16,height:VSB-16,rx:4,fill:C_BG},vsvg);
-E('text',{x:VW/2,y:12,'text-anchor':'middle','font-size':9.5,fill:C_CREAM,opacity:0.85,'font-family':MONO},vsvg).textContent='VARIO';
+E('text',{x:VW/2,y:12,'text-anchor':'middle','font-size':10.5,fill:C_CREAM,opacity:1,'font-family':MONO},vsvg).textContent='VARIO';
 for(let v=-6;v<=6;v+=2){ const y=VCY-v*VPX; E('line',{x1:VW-26,y1:y,x2:VW-16,y2:y,stroke:C_CREAM,'stroke-width':1.1,opacity:0.8},vsvg); E('text',{x:VW-29,y:y+3,'text-anchor':'end','font-size':9,fill:C_CREAM,opacity:0.8,'font-family':MONO},vsvg).textContent=(v>0?'+':'')+v; }
 E('line',{x1:VW-26,y1:VCY,x2:VW-12,y2:VCY,stroke:C_CREAM,'stroke-width':1.6,opacity:0.9},vsvg);
 const vNeedle=E('polygon',{points:`${VW-16},${VCY} ${VW-7},${VCY-5} ${VW-7},${VCY+5}`,fill:'#fff'},vsvg);   // white needle
@@ -1141,7 +1133,7 @@ function updWind(hdg){                                        // live LOCAL wind
 
 /* ===================== D1 — extra instruments (barograph, G, slip, TE-vario, MacCready, minimap) ===================== */
 // total-energy vario: a 2nd (amber, hollow) needle on the vario gauge — distinct from the solid white vario needle
-const vTENeedle=E('polygon',{points:`${VW-16},${VCY} ${VW-9},${VCY-4} ${VW-9},${VCY+4}`,fill:'none',stroke:C_CREAM,'stroke-width':1.4,opacity:0.95},vsvg);   // grey hollow — distinct from the solid white main needle
+const vTENeedle=E('polygon',{points:`${VW-16},${VCY} ${VW-9},${VCY-4} ${VW-9},${VCY+4}`,fill:'none',stroke:'#8b95a1','stroke-width':1.6,opacity:0.95},vsvg);   // dim-grey hollow — stays distinct from the solid white main needle (scales are bright C_CREAM)
 let prevTE=0, teVarioS=0;
 function updTEVario(ms){ const c=Math.max(-6,Math.min(6,ms)), y=VCY-c*VPX; vTENeedle.setAttribute('points',`${VW-16},${y} ${VW-9},${y-4} ${VW-9},${y+4}`); }
 
@@ -1229,11 +1221,11 @@ function updMap(hdg,dt){
   const hr=hdg*Math.PI/180, sh=Math.sin(hr), ch=Math.cos(hr), cy0=MAP_TOP+MAPR;
   heatTimer+=dt; if(heatTimer>=0.07){ heatTimer=0; sampleHeat(hr); }   // ~14 Hz -> no visible lag vs the live N marker in fast turns
   mapCtx.clearRect(0,0,MAP,MAP+MAP_TOP);
-  mapCtx.textAlign='center'; mapCtx.fillStyle='rgba(234,228,214,0.85)'; mapCtx.font=MAP_FONT_LIFT; mapCtx.fillText('LIFT',MAPR,11);
+  mapCtx.textAlign='center'; mapCtx.fillStyle='rgba(236,241,246,0.96)'; mapCtx.font=MAP_FONT_LIFT; mapCtx.fillText('LIFT',MAPR,11);
   mapCtx.save(); mapCtx.beginPath(); mapCtx.arc(MAPR,cy0,MAPR-1,0,6.2832); mapCtx.clip();
   mapCtx.imageSmoothingEnabled=true; mapCtx.drawImage(heatCv,0,MAP_TOP,MAP,MAP); mapCtx.restore();
-  mapCtx.strokeStyle='rgba(234,228,214,0.45)'; mapCtx.lineWidth=1; mapCtx.beginPath(); mapCtx.arc(MAPR,cy0,MAPR-1,0,6.2832); mapCtx.stroke();
-  const r=MAPR-11; mapCtx.fillStyle='rgba(234,228,214,0.9)'; mapCtx.font=MAP_FONT_N; mapCtx.fillText('N',MAPR-sh*r, cy0-ch*r+3);
+  mapCtx.strokeStyle='rgba(220,227,234,0.6)'; mapCtx.lineWidth=1; mapCtx.beginPath(); mapCtx.arc(MAPR,cy0,MAPR-1,0,6.2832); mapCtx.stroke();
+  const r=MAPR-11; mapCtx.fillStyle='rgba(236,241,246,0.96)'; mapCtx.font=MAP_FONT_N; mapCtx.fillText('N',MAPR-sh*r, cy0-ch*r+3);
   mapCtx.fillStyle=C_AMBER; mapCtx.beginPath(); mapCtx.moveTo(MAPR,cy0-6); mapCtx.lineTo(MAPR-4,cy0+5); mapCtx.lineTo(MAPR+4,cy0+5); mapCtx.closePath(); mapCtx.fill();
 }
 function resetInst(){ baroLen=0; baroT=0; prevTE=glider.pos.y+(glider.airspeed*glider.airspeed)/(2*G); teVarioS=0; }
@@ -1241,7 +1233,7 @@ function resetInst(){ baroLen=0; baroT=0; prevTE=glider.pos.y+(glider.airspeed*g
 function updateHUD(dt){
   const dts=dt||FIXED, air0=glider.airspeed;
   const air=air0*MPS, alt=glider.pos.y*MPS+ALT_BASE, hdg=Math.atan2(_f.x,-_f.z)*DEG, vario=glider.vel.y*MPS;
-  updHdg(hdg); updVtape(asi,air); updVtape(alti,alt); updVario(vario);   // wind now merged into updHdg
+  updHdg(hdg); updVtape(asi,air); updVtape(alti,alt); updVario(vario); updWind(hdg);
   const TE=glider.pos.y+(air0*air0)/(2*G), teRate=(TE-prevTE)/dts; prevTE=TE;     // total-energy vario
   teVarioS += ((teRate*MPS)-teVarioS)*clamp(dts*4,0,1); updTEVario(teVarioS);
   const airmass=windLift(glider.pos.x,glider.pos.y,glider.pos.z,simTime)*MPS;       // vertical air motion (MacCready)
