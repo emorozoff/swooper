@@ -292,7 +292,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 window.__swooper = {};
 try {
-const VERSION = '0.83';
+const VERSION = '0.84';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -818,9 +818,9 @@ function updateFlex(dt){
   flex.sAil =(flex.sAil ||0)+(clamp(horizontalInput,-1,1)-(flex.sAil ||0))*sm;
   flex.sElev=(flex.sElev||0)+(clamp(verticalInput,  -1,1)-(flex.sElev||0))*sm;
   flex.sRud =(flex.sRud ||0)+(clamp(yawInput,       -1,1)-(flex.sRud ||0))*sm;
-  if(flex.ailR){ flex.ailR.rotation.x=0.5*flex.sAil; flex.ailL.rotation.x=-0.5*flex.sAil; }   // ailerons antisymmetric (roll into the bank)
-  if(flex.elev)   flex.elev.rotation.x=-0.42*flex.sElev;                                       // elevator (pitch — TE up = nose up)
-  if(flex.rudder) flex.rudder.rotation.y=0.5*flex.sRud;                                        // rudder (yaw — TE toward the turn)
+  if(flex.ailR){ flex.ailR.rotation.x=-0.5*flex.sAil; flex.ailL.rotation.x=0.5*flex.sAil; }   // ailerons antisymmetric (local-X hinge; sign matched to the downloaded model)
+  if(flex.elev)   flex.elev.rotation.x=-0.42*flex.sElev;                                        // (downloaded model has no separate elevator)
+  if(flex.rudder) flex.rudder.rotation.z=0.5*flex.sRud;                                         // rudder: vertical hinge is the node's local Z (its local Y points fore-aft)
   // jet boost exhaust (Shift) — sparks from the nozzle
   boostS += ((boosting?1:0)-boostS)*clamp(dt*8,0,1);
   updateJetFX(dt);
@@ -1656,7 +1656,7 @@ window.__swooper={
   windBase(x,z){ const v=windBaseAt(x,z,simTime,new THREE.Vector3()); return {x:+v.x.toFixed(1),z:+v.z.toFixed(1),mag:+Math.hypot(v.x,v.z).toFixed(1),ang:+(Math.atan2(v.x,-v.z)*DEG).toFixed(0)}; },
   cloudCount(){ let n=0; for(let i=0;i<cloudSize.array.length;i++) if(cloudSize.array[i]>0) n++; return n; },
   flexState(){ return {bend:+flex.bend.toFixed(4), wingR:+(flex.wingR?flex.wingR.rotation.z:0).toFixed(3), wingL:+(flex.wingL?flex.wingL.rotation.z:0).toFixed(3), model:!!flex.model}; },
-  surf(){ return { ail:+(flex.ailR?flex.ailR.rotation.x:0).toFixed(3), elev:+(flex.elev?flex.elev.rotation.x:0).toFixed(3), rud:+(flex.rudder?flex.rudder.rotation.y:0).toFixed(3) }; },
+  surf(){ return { ail:+(flex.ailR?flex.ailR.rotation.x:0).toFixed(3), elev:+(flex.elev?flex.elev.rotation.x:0).toFixed(3), rud:+(flex.rudder?flex.rudder.rotation.z:0).toFixed(3) }; },
   boostState(){ return { on:boosting, s:+boostS.toFixed(2), jetVis:jspMesh.visible }; },
   jetFx(){ return { sparks:jspMesh.visible }; },
   preview(dist=16,az=0.7,el=0.34,g=null){ if(g!=null) glider.gload=g; previewMode=true; gliderGroup.position.set(0,0,0); gliderGroup.quaternion.identity();
