@@ -289,9 +289,10 @@
 
 <script type="module">
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 window.__swooper = {};
 try {
-const VERSION = '0.82';
+const VERSION = '0.83';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -762,10 +763,22 @@ function buildFlexGlider(){
   g.traverse(o=>{ if(o.isMesh) o.castShadow=true; });
   return g;
 }
-craftHolder.add(buildFlexGlider());
+// glider mesh: downloaded low-poly sailplane (UNDERPOLY, CC-BY-4.0) with separate ailerons + rudder; falls back to the procedural craft if it fails to load
+flex.dih=0; flex.bend=0; flex.bendV=0;
+const GLIDER_SCALE=1.2;   // model span ~15 -> ~18 (game scale)
+new GLTFLoader().load('./glider/scene.gltf', gltf=>{
+  const m=gltf.scene; m.scale.setScalar(GLIDER_SCALE); m.rotation.y=Math.PI;   // nose +z -> game -z
+  m.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false; if(o.material){ o.material.metalness=Math.min(o.material.metalness??0,0.15); } }
+    if(/LandingGear|Wheel|_Door/.test(o.name||'')) o.visible=false; });   // retract gear/doors for clean flight
+  craftHolder.add(m); flex.model=m;
+  flex.ailR=m.getObjectByName('V1_SailplaneGlider_1_Aileron_R');   // model -x -> game +x (right) after the 180° flip
+  flex.ailL=m.getObjectByName('V1_SailplaneGlider_1_Aileron_L');
+  flex.rudder=m.getObjectByName('V1_SailplaneGlider_1_Rudder');
+  flex.ready=true;
+}, undefined, err=>{ console.warn('glider model load failed; using procedural craft', err); craftHolder.add(buildFlexGlider()); });
 
 // ===================== JET EXHAUST (Shift boost) — sparks shooting aft from the nozzle (chosen style) =====================
-const JET_Z=1.0+CLASSIC.boomLen;                      // nozzle z (local)
+const JET_Z=4.2;                      // nozzle z (local) — tail of the downloaded glider
 const JSP_N=70, jspPos=new Float32Array(JSP_N*3), jspVel=new Float32Array(JSP_N*3), jspLife=new Float32Array(JSP_N), jspAlf=new Float32Array(JSP_N);
 for(let i=0;i<JSP_N;i++) jspLife[i]=2;
 const jspGeo=new THREE.BufferGeometry(); jspGeo.setAttribute('position',new THREE.BufferAttribute(jspPos,3)); jspGeo.setAttribute('aLife',new THREE.BufferAttribute(jspAlf,1));
@@ -798,8 +811,7 @@ function updateFlex(dt){
   for(let s=0;s<N;s++){ const a=FX.K*FX.K*(wantBend-flex.bend)-2*zeta*FX.K*flex.bendV; flex.bendV+=a*sdt; flex.bend+=flex.bendV*sdt; }
   flex.bend=clamp(flex.bend,FX.BEND_MIN-0.03,FX.BEND_MAX+0.06);
   const a=flex.dih+flex.bend;
-  flex.wingR.rotation.z= a;     // right tip up
-  flex.wingL.rotation.z=-a;     // left tip up
+  if(flex.wingR){ flex.wingR.rotation.z=a; flex.wingL.rotation.z=-a; }   // wing-bow (procedural craft only; downloaded model has no separate wing roots)
   if(flex.spoilerR){ const sd=-brake*1.15; flex.spoilerR.rotation.x=sd; flex.spoilerL.rotation.x=sd; }   // airbrakes pop up with Space
   // control surfaces follow the pilot inputs (cosmetic), smoothed for a mechanical feel
   const sm=clamp(dt*9,0,1);
@@ -1643,7 +1655,7 @@ window.__swooper={
   heatAt(x,z){ const d=60, gx=(terrainHeight(x+d,z)-terrainHeight(x-d,z))/(2*d), gz=(terrainHeight(x,z+d)-terrainHeight(x,z-d))/(2*d); return +solarHeat(gx,gz).toFixed(3); },
   windBase(x,z){ const v=windBaseAt(x,z,simTime,new THREE.Vector3()); return {x:+v.x.toFixed(1),z:+v.z.toFixed(1),mag:+Math.hypot(v.x,v.z).toFixed(1),ang:+(Math.atan2(v.x,-v.z)*DEG).toFixed(0)}; },
   cloudCount(){ let n=0; for(let i=0;i<cloudSize.array.length;i++) if(cloudSize.array[i]>0) n++; return n; },
-  flexState(){ return {bend:+flex.bend.toFixed(4), wingR:+flex.wingR.rotation.z.toFixed(3), wingL:+flex.wingL.rotation.z.toFixed(3)}; },
+  flexState(){ return {bend:+flex.bend.toFixed(4), wingR:+(flex.wingR?flex.wingR.rotation.z:0).toFixed(3), wingL:+(flex.wingL?flex.wingL.rotation.z:0).toFixed(3), model:!!flex.model}; },
   surf(){ return { ail:+(flex.ailR?flex.ailR.rotation.x:0).toFixed(3), elev:+(flex.elev?flex.elev.rotation.x:0).toFixed(3), rud:+(flex.rudder?flex.rudder.rotation.y:0).toFixed(3) }; },
   boostState(){ return { on:boosting, s:+boostS.toFixed(2), jetVis:jspMesh.visible }; },
   jetFx(){ return { sparks:jspMesh.visible }; },

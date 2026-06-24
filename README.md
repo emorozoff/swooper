@@ -36,4 +36,10 @@ An optional in-game player streams calm, atmospheric tracks (controls top-left, 
 - **Chris Zabriskie** — *The Temperature of the Air on the Bow of the Kaleetan*, *The Dark Glow of the Mountains* — **[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)**.
 - **Scott Buckley** (scottbuckley.com.au) — *The Distant Sun (Monomyth 1)* — **[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)**; *The Long Dark* — **[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)**.
 
+## 3D model
+
+The glider mesh is **"UNDERPOLY: Free Sailplane Glider"** by **UNDERPOLY Project**, used under CC-BY-4.0 (attribution required); its ailerons and rudder are animated in-engine from the flight controls.
+
+> This work is based on ["UNDERPOLY: Free Sailplane Glider"](https://sketchfab.com/3d-models/underpoly-free-sailplane-glider-45ffefc38fcf4e76a9d0c2a4e76262ef) by [UNDERPOLY Project](https://sketchfab.com/underpolyproject) licensed under [CC-BY-4.0](http://creativecommons.org/licenses/by/4.0/).
+
 🚧 Work in progress.
