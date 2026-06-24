@@ -292,7 +292,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 window.__swooper = {};
 try {
-const VERSION = '0.86';
+const VERSION = '0.87';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -314,7 +314,11 @@ const QA = 0.0034;
 const CL_SLOPE = 6.5, CL_FP = 0.70;
 // higher critical AoA = more stall margin so a hard pull stays attached (max-G)
 // -> loops complete instead of mushing. stall now a low-speed phenomenon.
-const ALPHA_STALL = 0.36, ALPHA_BLEND = 0.045, ALPHA_TRIM = 0.045;
+// ALPHA_TRIM = hands-off equilibrium AoA. Lift∝V² at this fixed AoA, so the craft
+// noses UP above the "trim speed" (lift>weight) and DOWN below it (speed stability).
+// Lowered 0.045->0.030: raises trim speed ~38->~47 m/s into mid-cruise, so hands-off
+// it glides ~neutral at normal speed and only pulls up once you're genuinely fast.
+const ALPHA_STALL = 0.36, ALPHA_BLEND = 0.045, ALPHA_TRIM = 0.030;
 // drag curve Cd(α). Energy rework (v0.26): low parasitic CD0 -> high top speed
 // (dives really accelerate) + floaty efficient glide; low induced CD_IND
 // (high-aspect wing) -> pulling/looping/turning keeps speed. Loops still tight.
