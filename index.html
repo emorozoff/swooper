@@ -292,7 +292,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 window.__swooper = {};
 try {
-const VERSION = '0.85';
+const VERSION = '0.86';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -464,6 +464,8 @@ const CHUNK=3000, GRID=7, HALF=(GRID-1)/2, SEG=32;
 const DESCENT = prefB('descent', false);            // 2nd world: endless dive down a slope (picked in the menu, applied on reload)
 const DESC_GRADE=0.85, DESC_RELIEF=0.34;            // steep downslope (~5x glide angle) + tamed relief to skim/weave
 let descDepth=0, descScore=0, descBest=prefN('descbest',0);
+let originX=0, originY=0, originZ=0;                 // descent floating origin: true-world offset of the displayed origin (keeps coords small forever)
+const REBASE_SPAN=GRID*CHUNK;                        // 21000 — a multiple of GRID*CHUNK keeps the toroidal chunk map aligned, so rebasing needs NO chunk rebuild
 function hash2(ix,iz){ let h=Math.imul(ix|0,374761393)^Math.imul(iz|0,668265263); h=Math.imul(h^(h>>>13),1274126177); return ((h^(h>>>16))>>>0)/4294967296; }
 function vnoise(x,z){ const x0=Math.floor(x),z0=Math.floor(z),fx=x-x0,fz=z-z0;
   const sx=fx*fx*(3-2*fx),sz=fz*fz*(3-2*fz);
@@ -473,9 +475,11 @@ function ridgedFbm(x,z){ let amp=1,freq=1,sum=0,norm=0;
   for(let o=0;o<T_OCT;o++){ let n=vnoise(x*freq,z*freq); n=1-Math.abs(2*n-1); n=Math.pow(n,RIDGE_SHARP); sum+=n*amp*(0.45+0.55*n); norm+=amp; amp*=0.5; freq*=2.0; }
   return sum/norm; }
 function terrainHeight(x,z){
+  if(DESCENT){ const X=x+originX, Z=z+originZ;        // relief samples TRUE coords (infinite); the downslope uses DISPLAYED z (kept bounded by rebasing)
+    const wx=X+T_WARP*Math.sin(Z*0.00006+1.7), wz=Z+T_WARP*Math.sin(X*0.00005+0.4);
+    return (ridgedFbm(wx*TFF_BASE+5.0+WORLD_OX, wz*TFF_BASE+2.0+WORLD_OZ)*PEAK_H - 1100)*DESC_RELIEF + DESC_GRADE*z; }
   const wx=x+T_WARP*Math.sin(z*0.00006+1.7), wz=z+T_WARP*Math.sin(x*0.00005+0.4);   // domain warp
-  const h=ridgedFbm(wx*TFF_BASE+5.0+WORLD_OX, wz*TFF_BASE+2.0+WORLD_OZ)*PEAK_H - 1100;   // +seed world offset
-  return DESCENT ? h*DESC_RELIEF + DESC_GRADE*z : h;   // descent world: tamed relief on an endless downslope (fly -z = downhill forever)
+  return ridgedFbm(wx*TFF_BASE+5.0+WORLD_OX, wz*TFF_BASE+2.0+WORLD_OZ)*PEAK_H - 1100;
 }
 // ---- wind field: orographic ridge lift + thermals -> you can SOAR ----
 // NON-UNIFORM wind: a slow large-scale drift of direction & strength over km,
@@ -607,6 +611,22 @@ function updateTerrain(){
     const ch=chunks[ix*GRID+iz];
     if(ch.cx!==cx||ch.cz!==cz) buildChunk(ch,cx,cz);
   }
+}
+// DESCENT floating origin: when the craft drifts a full grid-span out, shift the WHOLE world back so coords never grow (no float jitter on endless dives).
+function rebaseDescent(){
+  let Sx=0, Sz=0;
+  if(glider.pos.x >  REBASE_SPAN) Sx=-REBASE_SPAN; else if(glider.pos.x < -REBASE_SPAN) Sx=REBASE_SPAN;
+  if(glider.pos.z >  REBASE_SPAN) Sz=-REBASE_SPAN; else if(glider.pos.z < -REBASE_SPAN) Sz=REBASE_SPAN;
+  if(!Sx && !Sz) return;
+  const Sy=DESC_GRADE*Sz;                              // keep AGL: the slope term shifts by GRADE*Sz, so lift everything to match
+  originX-=Sx; originY-=Sy; originZ-=Sz;               // true = displayed + origin (true position stays put)
+  glider.pos.x+=Sx; glider.pos.y+=Sy; glider.pos.z+=Sz;  prevPos.x+=Sx; prevPos.y+=Sy; prevPos.z+=Sz;
+  if(!isNaN(camBase.x)){ camBase.x+=Sx; camBase.y+=Sy; camBase.z+=Sz; }  camera.position.x+=Sx; camera.position.y+=Sy; camera.position.z+=Sz;
+  for(const ch of chunks){ ch.mesh.position.x+=Sx; ch.mesh.position.y+=Sy; ch.mesh.position.z+=Sz;   // Sy lifts the stale-baked heights; SPAN keeps the toroidal cells aligned -> no rebuild
+    if(ch.cx!=null){ ch.cx+=Sx/CHUNK; ch.cz+=Sz/CHUNK; } }
+  for(let i=0;i<AIR_N*3;i+=3){ airPos[i]+=Sx; airPos[i+1]+=Sy; airPos[i+2]+=Sz; }
+  for(const tr of [trailR,trailL]){ const c=tr.cpos; for(let i=0;i<c.length;i+=3){ c[i]+=Sx; c[i+1]+=Sy; c[i+2]+=Sz; } }
+  cloudCX=null;                                        // clouds rebuild over the shifted field (cheap; ambient-only in descent)
 }
 // thermals slider: scale the solar drive, then force clouds to rebuild over the new source field
 function setThermals(scale){
@@ -1076,7 +1096,7 @@ function startFlight(){
   rawH=rawV=horizontalInput=verticalInput=0;
   prevPos.copy(glider.pos); prevQ.copy(glider.q);
   updateTerrain(); cloudCX=null; updateClouds();
-  brake=0; nearMiss=0; descScore=0; descDepth=0; camOrbitAz=0; camOrbitEl=0; camIdle=0; dragging=false; camBase.set(NaN,0,0); resetInst();
+  brake=0; nearMiss=0; descScore=0; descDepth=0; originX=originY=originZ=0; camOrbitAz=0; camOrbitEl=0; camIdle=0; dragging=false; camBase.set(NaN,0,0); resetInst();
   seedTrail(trailR,1,glider.pos,glider.q); seedTrail(trailL,-1,glider.pos,glider.q);
   previewMode=false;
   state='flying'; menuEl.classList.add('hidden'); pauseChip.classList.add('hidden'); settingsEl.classList.add('hidden'); crashEl.classList.add('hidden');
@@ -1473,7 +1493,7 @@ function updateHUD(dt){
   aglText.textContent='AGL '+Math.max(0,Math.round(agl)); aglText.setAttribute('fill', ac||C_CREAM);
   if(DESCENT){                                        // proximity (close+fast) -> score; depth = how far below spawn
     const clr=clearanceNow(), prox=clamp(1-clr/55,0,1), spd=clamp((glider.gndspeed-90)/200,0,1);
-    descScore += prox*spd*dts*120; descDepth=(spawnY-glider.pos.y)*MPS;
+    descScore += prox*spd*dts*120; descDepth=(spawnY-(glider.pos.y+originY))*MPS;   // true depth = displayed y + accumulated origin shift
     if(dAgl){ dAgl.textContent=Math.max(0,Math.round(agl)); dAgl.style.color=ac||'#eef2f6';
       dDepth.textContent=Math.max(0,Math.round(descDepth)); dScore.textContent=Math.round(descScore); } }
   if(showInstr.i_wind) updWind(hdg);
@@ -1615,6 +1635,7 @@ function loop(now){
   if (state==='flying'){
     acc+=frame; let guard=0;
     while(acc>=FIXED && guard++<8){ prevPos.copy(glider.pos); prevQ.copy(glider.q); fixedStep(); acc-=FIXED; }
+    if(DESCENT) rebaseDescent();   // keep the endless-dive coordinates bounded
     updateHUD(frame); updateTerrain(); updateClouds();
     const spF=clamp((glider.gndspeed-120)/120,0,1);                       // near-miss only thrills when fast
     const nmT=fxOn? clamp(1-clearanceNow()/90,0,1)*spF : 0;
@@ -1680,6 +1701,8 @@ window.__swooper={
   gfxState(){ return { q:gfxQ, pr:+renderer.getPixelRatio().toFixed(2), shadows:renderer.shadowMap.enabled }; },
   setGfx(q){ setGfx(q); },
   thermState(){ return { scale:+thermalScale.toFixed(2) }; },
+  originState(){ return { oZ:originZ, oY:+originY.toFixed(0), gx:+glider.pos.x.toFixed(0), gz:+glider.pos.z.toFixed(0), gy:+glider.pos.y.toFixed(0), agl:+(glider.pos.y-terrainHeight(glider.pos.x,glider.pos.z)).toFixed(0), depth:+descDepth.toFixed(0) }; },
+  _tp(x,y,z){ glider.pos.set(x,y,z); prevPos.copy(glider.pos); },
   setTherm(s){ setThermals(s); },
   renderInfo(){ const r=renderer.info.render; return { calls:r.calls, triangles:r.triangles }; },
   spoilerDeg(){ return +(flex.spoilerR.rotation.x*DEG).toFixed(1); },
