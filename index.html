@@ -292,7 +292,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 window.__swooper = {};
 try {
-const VERSION = '0.84';
+const VERSION = '0.85';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -912,9 +912,12 @@ function rebuildRibbon(tr){
 }
 function seedTrail(tr,sign,rp,rq){ wingTipLocal(sign,_tip).applyQuaternion(rq).add(rp);
   for(let i=0;i<TRAIL_N;i++){ tr.cpos[i*3]=_tip.x; tr.cpos[i*3+1]=_tip.y; tr.cpos[i*3+2]=_tip.z; } rebuildRibbon(tr); }
+let _trailEmit=false;
 function updateTrails(rp,rq,dt){
   const g=Math.abs(glider.gload), emit=trailsOn && g>1.8;        // appear only under harder G
   const op = emit ? clamp((g-1.8)*0.3,0,0.35) : 0;               // twin-helix strands — half as opaque as before
+  if(emit && !_trailEmit){ seedTrail(trailR,1,rp,rq); seedTrail(trailL,-1,rp,rq); }   // collapse to the tip so the trail GROWS out from the wing, not all at once
+  _trailEmit=emit;
   for(const [tr,sign] of [[trailR,1],[trailL,-1]]){
     wingTipLocal(sign,_tip).applyQuaternion(rq).add(rp);
     tr.cpos.copyWithin(0,3); const n=tr.cpos.length; tr.cpos[n-3]=_tip.x; tr.cpos[n-2]=_tip.y; tr.cpos[n-1]=_tip.z;
@@ -1220,7 +1223,7 @@ function updateCamera(dt, rpos, rq){
   // limited tilt toward roll that FADES TO ZERO at inversion -> no jerk in barrel rolls
   _cUp.copy(_cp).sub(_lu).multiplyScalar(ROLL_TILT).add(_lu).normalize();
   // speed -> camera distance (100->60, 300->100), eased
-  const targetDist=clamp(30+(glider.gndspeed-100)*0.07, 36, 44);   // closer (min 36 so slow flight isn't too tight)
+  const targetDist=clamp(22+(glider.gndspeed-100)*0.06, 27, 35);   // closer chase
   camDistSmooth += (targetDist-camDistSmooth)*(1-Math.exp(-dt*1.5));
   // 1) camBase = orbit-FREE smoothed follow position. Its goal is always BEHIND the craft, so it never
   //    accumulates orbit -> the rotation below can't compound/spin.
