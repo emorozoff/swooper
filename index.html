@@ -186,7 +186,7 @@
 
       <div class="setgrp">Графика</div>
       <div class="setrow setseg"><span>качество</span><span class="seg" id="set-gfx"><button data-q="0">низк</button><button data-q="1">сред</button><button data-q="2">выс</button></span></div>
-      <div class="setrow setseg"><span>облака</span><span class="seg" id="set-clouds"><button data-c="0">выкл</button><button data-c="1">спрайты A</button><button data-c="2">объём B</button></span></div>
+      <div class="setrow setseg"><span>облака</span><span class="seg" id="set-clouds"><button data-c="0">выкл</button><button data-c="1">слой</button><button data-c="2">объём</button></span></div>
       <label class="setrow"><input type="checkbox" id="set-trails"> следы за крыльями</label>
       <label class="setrow"><input type="checkbox" id="set-i_fps"> показывать FPS</label>
 
@@ -277,7 +277,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 window.__swooper = {};
 try {
-const VERSION = '0.91';
+const VERSION = '0.92';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -650,110 +650,237 @@ function updateAirParticles(dt){
   airParticles.geometry.attributes.position.needsUpdate=true;
 }
 
-/* ===================== CLOUDS (enhanced sprites — A flat clusters / B volumetric clusters) =====================
-   Instanced camera-facing sprites with a crisp cauliflower texture, lit DIRECTIONALLY by the sun:
-   per-fragment sphere-imposter normal -> bright sun-side / dark base / bright rim, plus a per-puff
-   sun-shade from its outward offset in the cloud. Two SWITCHABLE styles:
-     A (1) = flat fuller clusters — a full 2D-ish cumulus silhouette from several overlapping sprites;
-     B (2) = 3D volumetric clusters — a lumpy ball of sprites you can fly under / see from any angle.
-   Slow wind drift + size 'breathing' in-shader; sprites fade out toward the streamed-grid edge into the
-   FogExp2 haze, so the grid restreams with no pop-in. Cumulus mark thermals; sparse fair-weather puffs. */
-const CLOUD_CELL=1700, CLOUD_R=6, CLOUD_BASE=3900, CLOUD_THRESH=0.42;
-const CLOUD_PER=12;                                          // sprite slots per cell (max cluster size)
-const CLOUD_N=(2*CLOUD_R+1)*(2*CLOUD_R+1)*CLOUD_PER;
-const CLOUD_FADE_R=CLOUD_R*CLOUD_CELL*0.92;                  // sprites fade out past this -> no pop on restream
-let cloudStyle=clamp(Math.round(prefN('cloudstyle',1)),0,2);// 0 off, 1 A flat, 2 B volumetric
+/* ===================== CLOUDS — two switchable styles (выкл / слой / объём) =====================
+   Style 1 "слой": an AIRY procedural fbm cloud deck on stacked camera-following planes (a continuous
+     wispy field — no discrete sprites, so no "balls") + a few BIG IRREGULAR impostor cumulus near
+     thermals for near-field 3D depth.
+   Style 2 "объём": TRUE volumetric clouds — a fullscreen raymarch sampling a baked tileable 3D noise
+     texture (cheap), depth-composited so terrain occludes, Beer-Lambert + Henyey-Greenstein sunset light.
+   Cumulus mark thermals. Switch in settings; live + persisted. */
+const CLOUD_CELL=1700, CLOUD_R=6, CLOUD_BASE=3900, CLOUD_THRESH=0.42, CLOUD_TOP=5200;
+let cloudStyle=clamp(Math.round(prefN('cloudstyle',1)),0,2);   // 0 off, 1 layer+impostors, 2 volumetric
+const cloudCapable=(renderer.capabilities.isWebGL2===true);    // volumetric needs WebGL2 (3D texture + depth texture)
 let cloudCX=null, cloudCZ=null;
-const cloudCenter=new THREE.InstancedBufferAttribute(new Float32Array(CLOUD_N*3),3);   // world sprite pos
-const cloudNormal=new THREE.InstancedBufferAttribute(new Float32Array(CLOUD_N*3),3);   // puff outward dir (cloud-scale sun shade)
-const cloudSize  =new THREE.InstancedBufferAttribute(new Float32Array(CLOUD_N),1);
-const cloudSeed  =new THREE.InstancedBufferAttribute(new Float32Array(CLOUD_N),1);
-let cloudClouds=null;
-function makeCloudTex(seed){                                 // lumpy cauliflower puff (several soft lobes)
+const _vp=new THREE.Matrix4(), _camFwd=new THREE.Vector3(), _v2=new THREE.Vector2();
+
+/* ---------- STYLE 1a: fbm sky-layer (stacked planes) ---------- */
+const LAYER_FRAG=`precision highp float;
+  uniform float uTime, uScale, uCover, uAlpha; uniform vec2 uWind, uSunXZ; uniform vec3 uSun, uShade, uFog;
+  varying vec2 vWxz; varying float vFog;
+  float h2(vec2 p){ p=fract(p*vec2(123.34,345.45)); p+=dot(p,p+34.345); return fract(p.x*p.y); }
+  float vn(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+    return mix(mix(h2(i),h2(i+vec2(1,0)),f.x), mix(h2(i+vec2(0,1)),h2(i+vec2(1,1)),f.x), f.y); }
+  float fbm(vec2 p){ float a=0.5,s=0.0; for(int i=0;i<5;i++){ s+=a*vn(p); p=p*2.03+vec2(1.7,9.2); a*=0.5; } return s; }
+  void main(){
+    vec2 q=vWxz*uScale + uWind*uTime*0.6;
+    float d=fbm(q);
+    float cov=smoothstep(uCover, uCover+0.22, d); if(cov<0.01) discard;
+    float ds=fbm(q + uSunXZ*0.55);                                    // density toward sun -> self-shadow
+    float lit=clamp(0.5 + (d-ds)*2.2, 0.12, 1.0);
+    vec3 col=mix(uShade, uSun, lit);
+    col=mix(col, uFog, vFog);
+    gl_FragColor=vec4(col, cov*(1.0-vFog*0.55)*uAlpha);
+  }`;
+const LAYER_VERT=`precision highp float; varying vec2 vWxz; varying float vFog;
+  void main(){ vec4 wp=modelMatrix*vec4(position,1.0); vWxz=wp.xz;
+    vec4 mv=modelViewMatrix*vec4(position,1.0); vFog=1.0-exp(-(-mv.z)*0.000042);
+    gl_Position=projectionMatrix*mv; }`;
+function makeLayer(y, scale, cover, alpha, shadeMul){
+  const u={ uTime:{value:0}, uScale:{value:scale}, uCover:{value:cover}, uAlpha:{value:alpha}, uWind:{value:new THREE.Vector2(1.0,0.4)},
+    uSunXZ:{value:new THREE.Vector2(SUN_DIR.x,SUN_DIR.z).normalize()}, uSun:{value:PAL.haloTint.clone()},
+    uShade:{value:PAL.skyGround.clone().multiplyScalar(shadeMul)}, uFog:{value:PAL.fog.clone()} };
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(95000,95000,1,1),
+    new THREE.ShaderMaterial({ transparent:true, depthWrite:false, depthTest:true, side:THREE.DoubleSide, fog:false, uniforms:u, vertexShader:LAYER_VERT, fragmentShader:LAYER_FRAG }));
+  m.rotation.x=-Math.PI/2; m.position.y=y; m.frustumCulled=false; m.renderOrder=1; m.visible=false; scene.add(m);
+  return {mesh:m, u, y};
+}
+const cloudLayers=[ makeLayer(4650, 0.00021, 0.46, 0.9, 0.95), makeLayer(5150, 0.00031, 0.52, 0.72, 1.12) ];
+
+/* ---------- STYLE 1b: big irregular impostor cumulus (instanced) ---------- */
+const IMP_N=(2*CLOUD_R+1)*(2*CLOUD_R+1)*2;                      // up to 2 big impostors per cell
+const impCenter=new THREE.InstancedBufferAttribute(new Float32Array(IMP_N*3),3);
+const impSize  =new THREE.InstancedBufferAttribute(new Float32Array(IMP_N),1);
+const impSeed  =new THREE.InstancedBufferAttribute(new Float32Array(IMP_N),1);
+function makeImpostorTex(seed){                                 // irregular cumulus silhouette with baked top-light
   const N=128, cv=document.createElement('canvas'); cv.width=cv.height=N; const c=cv.getContext('2d'); const rnd=mulberry32(seed>>>0);
-  for(let i=0;i<7;i++){ const a=rnd()*6.2831, cx=N*0.5+Math.cos(a)*N*0.18*rnd(), cy=N*0.5+Math.sin(a)*N*0.16*rnd(), rr=N*(0.17+0.20*rnd());
-    const g=c.createRadialGradient(cx,cy,1,cx,cy,rr); g.addColorStop(0,'rgba(255,255,255,0.9)'); g.addColorStop(0.6,'rgba(255,255,255,0.45)'); g.addColorStop(1,'rgba(255,255,255,0)');
+  for(let i=0;i<16;i++){ const fx=0.12+0.76*rnd(), fy=0.34+0.5*rnd(), rr=N*(0.07+0.13*rnd());   // lumpy outline, flatter base
+    const cx=N*fx, cy=N*fy; const g=c.createRadialGradient(cx,cy,1,cx,cy,rr);
+    g.addColorStop(0,'rgba(255,255,255,1)'); g.addColorStop(0.7,'rgba(255,255,255,0.85)'); g.addColorStop(1,'rgba(255,255,255,0)');
     c.fillStyle=g; c.beginPath(); c.arc(cx,cy,rr,0,6.2831); c.fill(); }
-  c.globalCompositeOperation='lighter';
-  const g0=c.createRadialGradient(N*0.5,N*0.5,2,N*0.5,N*0.5,N*0.42); g0.addColorStop(0,'rgba(255,255,255,1)'); g0.addColorStop(0.55,'rgba(255,255,255,0.8)'); g0.addColorStop(1,'rgba(255,255,255,0)');
-  c.fillStyle=g0; c.beginPath(); c.arc(N*0.5,N*0.5,N*0.42,0,6.2831); c.fill();
+  c.globalCompositeOperation='source-atop';                    // bake vertical light into RGB (top bright, base dusky), keep alpha
+  const lg=c.createLinearGradient(0,0,0,N); lg.addColorStop(0,'rgb(255,255,255)'); lg.addColorStop(0.6,'rgb(208,210,224)'); lg.addColorStop(1,'rgb(120,124,150)');
+  c.fillStyle=lg; c.fillRect(0,0,N,N);
   const t=new THREE.CanvasTexture(cv); t.needsUpdate=true; return t;
 }
-const cloudUms={ map:{value:makeCloudTex(0x9e37)}, uSun:{value:PAL.haloTint.clone()}, uShade:{value:PAL.skyGround.clone()},
-  uRim:{value:PAL.sunGlow.clone()}, uFog:{value:PAL.fog.clone()}, uSunView:{value:new THREE.Vector3()}, uSunWorld:{value:SUN_DIR.clone()},
-  uTime:{value:0}, uWind:{value:new THREE.Vector2(1.0,0.4)}, uCam:{value:new THREE.Vector3()}, uFadeR:{value:CLOUD_FADE_R} };
+const impUms={ map:{value:makeImpostorTex(0x51a7)}, uSun:{value:PAL.haloTint.clone()}, uShade:{value:PAL.skyGround.clone()}, uFog:{value:PAL.fog.clone()},
+  uTime:{value:0}, uWind:{value:new THREE.Vector2(1.0,0.4)}, uCam:{value:new THREE.Vector3()}, uFadeR:{value:CLOUD_R*CLOUD_CELL*0.9} };
+let impMesh=null;
 {
   const quad=new THREE.PlaneGeometry(1,1);
-  const cgeo=new THREE.InstancedBufferGeometry();
-  cgeo.setIndex(quad.index); cgeo.setAttribute('position',quad.attributes.position); cgeo.setAttribute('uv',quad.attributes.uv);
-  cgeo.setAttribute('aCenter',cloudCenter); cgeo.setAttribute('aNormal',cloudNormal); cgeo.setAttribute('aSize',cloudSize); cgeo.setAttribute('aSeed',cloudSeed);
-  cgeo.instanceCount=CLOUD_N;
-  const cmat=new THREE.ShaderMaterial({ transparent:true, depthWrite:false, depthTest:true, uniforms:cloudUms,
-    vertexShader:`attribute vec3 aCenter; attribute vec3 aNormal; attribute float aSize; attribute float aSeed;
-      uniform float uTime, uFadeR; uniform vec2 uWind; uniform vec3 uCam, uSunWorld;
-      varying vec2 vUv; varying float vShade, vFade, vHaze;
-      void main(){ vUv=uv;
-        vec3 wc=aCenter; wc.xz += uWind*uTime*4.0;                                   // slow wind drift
-        vShade = dot(aNormal, uSunWorld);                                            // per-puff cloud-scale sun shade
-        float dr=length(wc.xz-uCam.xz); vFade = 1.0 - smoothstep(uFadeR*0.72, uFadeR, dr);   // dissolve at grid edge (no pop)
-        float breathe = 1.0 + 0.05*sin(uTime*0.5 + aSeed*6.2831);
-        vec4 mv = modelViewMatrix*vec4(wc,1.0);
-        vHaze = 1.0 - exp(-(-mv.z)*0.000068);                                        // aerial perspective (matches FogExp2)
-        mv.xy += position.xy * aSize * breathe;
-        gl_Position = projectionMatrix*mv; }`,
-    fragmentShader:`uniform sampler2D map; uniform vec3 uSun,uShade,uRim,uSunView,uFog;
-      varying vec2 vUv; varying float vShade, vFade, vHaze;
-      void main(){ float a=texture2D(map,vUv).a; if(a<0.02) discard;
-        vec2 pp=(vUv-0.5)*2.0; float r2=dot(pp,pp); if(r2>1.0) discard;
-        vec3 n=vec3(pp, sqrt(max(0.0,1.0-r2)));                                       // sphere-imposter normal (view space)
-        float ndl=dot(n, uSunView);
-        float lit=clamp(ndl*0.5+0.5, 0.0, 1.0);
-        float cs=clamp(vShade*0.5+0.5, 0.0, 1.0);
-        vec3 base=mix(uShade, uSun, clamp(cs*0.55+lit*0.55, 0.0, 1.0));
-        float rim=pow(1.0-n.z,3.0)*clamp(ndl+0.2, 0.0, 1.0);                          // silver lining toward sun
-        vec3 col=base + uRim*rim*0.7;
-        col=mix(col, uFog, clamp(vHaze,0.0,0.85));
-        gl_FragColor=vec4(col, a*clamp(vFade,0.0,1.0)); }`
+  const g=new THREE.InstancedBufferGeometry();
+  g.setIndex(quad.index); g.setAttribute('position',quad.attributes.position); g.setAttribute('uv',quad.attributes.uv);
+  g.setAttribute('aCenter',impCenter); g.setAttribute('aSize',impSize); g.setAttribute('aSeed',impSeed); g.instanceCount=IMP_N;
+  const m=new THREE.ShaderMaterial({ transparent:true, depthWrite:false, depthTest:true, uniforms:impUms,
+    vertexShader:`attribute vec3 aCenter; attribute float aSize; attribute float aSeed;
+      uniform float uTime,uFadeR; uniform vec2 uWind; uniform vec3 uCam;
+      varying vec2 vUv; varying float vFade, vHaze;
+      void main(){ vUv=uv; vec3 wc=aCenter; wc.xz+=uWind*uTime*4.0;
+        float dr=length(wc.xz-uCam.xz); vFade=1.0-smoothstep(uFadeR*0.7,uFadeR,dr);
+        float br=1.0+0.04*sin(uTime*0.4+aSeed*6.2831);
+        vec4 mv=modelViewMatrix*vec4(wc,1.0); vHaze=1.0-exp(-(-mv.z)*0.000052);
+        mv.xy+=position.xy*aSize*br; gl_Position=projectionMatrix*mv; }`,
+    fragmentShader:`uniform sampler2D map; uniform vec3 uSun,uShade,uFog; varying vec2 vUv; varying float vFade,vHaze;
+      void main(){ vec4 t=texture2D(map,vUv); if(t.a<0.03) discard;
+        vec3 col=mix(uShade, uSun, clamp(t.r*1.05, 0.0, 1.0));                       // baked top-light shape
+        col=mix(col, uFog, clamp(vHaze,0.0,0.8));
+        gl_FragColor=vec4(col, t.a*clamp(vFade,0.0,1.0)); }`
   });
-  cloudClouds=new THREE.Mesh(cgeo,cmat); cloudClouds.frustumCulled=false; cloudClouds.renderOrder=2; cloudClouds.visible=cloudStyle!==0; scene.add(cloudClouds);
+  impMesh=new THREE.Mesh(g,m); impMesh.frustumCulled=false; impMesh.renderOrder=2; impMesh.visible=false; scene.add(impMesh);
 }
-function updateClouds(){
-  if(cloudStyle===0){ if(cloudClouds) cloudClouds.visible=false; return; }
-  if(cloudClouds) cloudClouds.visible=true;
+function updateImpostors(){
   const ccx=Math.round(glider.pos.x/CLOUD_CELL), ccz=Math.round(glider.pos.z/CLOUD_CELL);
-  if(ccx===cloudCX&&ccz===cloudCZ) return;
-  cloudCX=ccx; cloudCZ=ccz;
-  const C=cloudCenter.array, Nr=cloudNormal.array, S=cloudSize.array, Sd=cloudSeed.array, vol=cloudStyle===2;
-  let p=0;
+  if(ccx===cloudCX&&ccz===cloudCZ) return; cloudCX=ccx; cloudCZ=ccz;
+  const C=impCenter.array, S=impSize.array, Sd=impSeed.array; let p=0;
   for(let dz=-CLOUD_R;dz<=CLOUD_R;dz++)for(let dx=-CLOUD_R;dx<=CLOUD_R;dx++){
     const cx=ccx+dx, cz=ccz+dz, wx=cx*CLOUD_CELL, wz=cz*CLOUD_CELL;
     const s=thermalSource(wx,wz), isCloud=s>CLOUD_THRESH;
-    const ambient = !isCloud && hash2(cx*7+1, cz*13+5)>0.74;            // sparse fair-weather puffs
-    const cyc=Math.max(CLOUD_BASE, terrainHeight(wx,wz)+500)+(isCloud?120+s*240:240);
-    const R=isCloud ? 260+520*s : 200, K=isCloud?CLOUD_PER:(ambient?3:0);
-    for(let k=0;k<CLOUD_PER;k++){
-      const o=p*3;
-      if(k<K){
-        const h1=hash2(cx*131+k*17, cz*977+k*7), h2=hash2(cx*53+k*3, cz*191+k*29), h3=hash2(cx*311+k, cz*97+k*13), h4=hash2(cx*17+k*5, cz*7+k*19);
-        let ox,oy,oz;
-        if(vol){                                                         // B: lumpy 3D ellipsoid (cauliflower ball)
-          const u=h1*6.2831, v=Math.acos(2*h2-1), rr=R*(0.32+0.68*Math.cbrt(h3));
-          ox=Math.cos(u)*Math.sin(v)*rr; oz=Math.sin(u)*Math.sin(v)*rr; oy=Math.cos(v)*rr*0.6+R*0.12;
-        } else {                                                         // A: flat fuller disc (full silhouette)
-          const u=h1*6.2831, rr=R*Math.sqrt(h2)*1.2;
-          ox=Math.cos(u)*rr; oz=Math.sin(u)*rr*0.9; oy=(h3-0.5)*R*0.3+k*7;
-        }
-        C[o]=wx+ox; C[o+1]=cyc+oy; C[o+2]=wz+oz;
-        const ny=oy+R*0.25, nl=Math.hypot(ox,ny,oz)||1; Nr[o]=ox/nl; Nr[o+1]=ny/nl; Nr[o+2]=oz/nl;   // outward dir (sun shade), biased up
-        S[p]=(vol? 260+360*s : 330+470*s)*(0.6+0.7*h4); Sd[p]=h1;   // B sized to overlap into a cohesive lumpy mass
+    const cyc=Math.max(CLOUD_BASE, terrainHeight(wx,wz)+500)+220+s*220;
+    const K=isCloud?2:0;
+    for(let k=0;k<2;k++){ const o=p*3;
+      if(k<K){ const h1=hash2(cx*131+k*17,cz*977+k*7), h2=hash2(cx*53+k*3,cz*191+k*29), h3=hash2(cx*311+k,cz*97+k*13);
+        C[o]=wx+(h1-0.5)*620; C[o+1]=cyc+(h3-0.5)*180; C[o+2]=wz+(h2-0.5)*620;
+        S[p]=(900+900*s)*(0.7+0.5*h2); Sd[p]=h1;
       } else { S[p]=0; }
-      p++;
-    }
+      p++; }
   }
-  cloudCenter.needsUpdate=true; cloudNormal.needsUpdate=true; cloudSize.needsUpdate=true; cloudSeed.needsUpdate=true;
+  impCenter.needsUpdate=true; impSize.needsUpdate=true; impSeed.needsUpdate=true;
 }
-function setCloudStyle(c){ cloudStyle=clamp(Math.round(c),0,2); prefSet('cloudstyle', cloudStyle); cloudCX=null;
-  if(cloudClouds) cloudClouds.visible=cloudStyle!==0; updateClouds();
+
+/* ---------- STYLE 2: volumetric raymarch (baked tileable 3D noise) ---------- */
+function makeNoise3D(N){                                        // tileable: octave lattice periods divide N
+  const data=new Uint8Array(N*N*N*4);
+  function hash(a,b,c,P){ a=((a%P)+P)%P; b=((b%P)+P)%P; c=((c%P)+P)%P; let n=(a*157+b*113+c*271)|0; n=(n<<13)^n;
+    return 1.0-((n*(n*n*15731+789221)+1376312589)&0x7fffffff)/1073741824.0; }
+  function vn(x,y,z,P){ const xi=Math.floor(x),yi=Math.floor(y),zi=Math.floor(z), xf=x-xi,yf=y-yi,zf=z-zi;
+    const u=xf*xf*(3-2*xf),v=yf*yf*(3-2*yf),w=zf*zf*(3-2*zf), L=(a,b,t)=>a+(b-a)*t;
+    const x00=L(hash(xi,yi,zi,P),hash(xi+1,yi,zi,P),u), x10=L(hash(xi,yi+1,zi,P),hash(xi+1,yi+1,zi,P),u),
+          x01=L(hash(xi,yi,zi+1,P),hash(xi+1,yi,zi+1,P),u), x11=L(hash(xi,yi+1,zi+1,P),hash(xi+1,yi+1,zi+1,P),u);
+    return L(L(x00,x10,v),L(x01,x11,v),w); }
+  for(let z=0;z<N;z++)for(let y=0;y<N;y++)for(let x=0;x<N;x++){
+    let s=0,a=0.5; for(const P of [4,8,16,32]){ s+=a*vn(x/N*P,y/N*P,z/N*P,P); a*=0.5; }   // 4-octave tileable fbm -> R
+    const det=vn(x/N*32,y/N*32,z/N*32,32);                                                 // high-freq detail -> G
+    const i=(z*N*N+y*N+x)*4; data[i]=Math.max(0,Math.min(255,(s*0.5+0.5)*255))|0; data[i+1]=Math.max(0,Math.min(255,(det*0.5+0.5)*255))|0; data[i+2]=data[i]; data[i+3]=255;
+  }
+  const t=new THREE.Data3DTexture(data,N,N,N); t.format=THREE.RGBAFormat; t.type=THREE.UnsignedByteType;
+  t.minFilter=t.magFilter=THREE.LinearFilter; t.wrapS=t.wrapT=t.wrapR=THREE.RepeatWrapping; t.needsUpdate=true; return t;
+}
+const COV_N=64, COV_SPAN=CLOUD_CELL*2*CLOUD_R;
+const covData=new Uint8Array(COV_N*COV_N);
+const covTex=new THREE.DataTexture(covData,COV_N,COV_N,THREE.RedFormat,THREE.UnsignedByteType);
+covTex.minFilter=covTex.magFilter=THREE.LinearFilter; covTex.wrapS=covTex.wrapT=THREE.ClampToEdgeWrapping; covTex.needsUpdate=true;
+let covCX=null, covCZ=null;
+let noiseTex=null, sceneRT=null, cloudRT=null, raymarchMat=null, compositeMat=null, fsScene=null, fsCam=null, fsQuad=null, volReady=false;
+function makeVol(){
+  if(volReady) return; volReady=true;
+  noiseTex=makeNoise3D(64);
+  fsScene=new THREE.Scene(); fsCam=new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+  fsQuad=new THREE.Mesh(new THREE.PlaneGeometry(2,2)); fsQuad.frustumCulled=false; fsScene.add(fsQuad);
+  raymarchMat=new THREE.ShaderMaterial({ glslVersion:THREE.GLSL3, depthTest:false, depthWrite:false,
+    uniforms:{ tDepth:{value:null}, uNoise:{value:noiseTex}, tCov:{value:covTex}, uInvVP:{value:new THREE.Matrix4()},
+      uCamPos:{value:new THREE.Vector3()}, uCamFwd:{value:new THREE.Vector3()}, uNear:{value:0.5}, uFar:{value:60000},
+      uSunDir:{value:SUN_DIR.clone()}, uSunCol:{value:PAL.haloTint.clone()}, uSunGlow:{value:PAL.sunGlow.clone()},
+      uSkyTop:{value:PAL.skyTop.clone()}, uSkyGnd:{value:PAL.skyGround.clone()}, uFog:{value:PAL.fog.clone()},
+      uCovOrigin:{value:new THREE.Vector2()}, uCovSpan:{value:COV_SPAN}, uTime:{value:0}, uWind:{value:new THREE.Vector2(1,0.35)},
+      uAmbient:{value:0.12}, uBase:{value:CLOUD_BASE}, uTop:{value:CLOUD_TOP} },
+    vertexShader:`out vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position.xy,0.0,1.0); }`,
+    fragmentShader:`precision highp float; precision highp sampler3D;
+      in vec2 vUv; out vec4 fragColor;
+      uniform sampler2D tDepth, tCov; uniform sampler3D uNoise; uniform mat4 uInvVP;
+      uniform vec3 uCamPos,uCamFwd,uSunDir,uSunCol,uSunGlow,uSkyTop,uSkyGnd,uFog; uniform vec2 uCovOrigin,uWind;
+      uniform float uNear,uFar,uTime,uCovSpan,uAmbient,uBase,uTop;
+      float cov(vec2 wxz){ return texture(tCov, clamp((wxz-uCovOrigin)/uCovSpan+0.5, 0.0,1.0)).r; }
+      float prof(float y,float c,float topN){ float topH=mix(uBase+450.0,uTop,c)+topN; return smoothstep(uBase,uBase+150.0,y)*(1.0-smoothstep(topH-540.0,topH+130.0,y)); }
+      float density(vec3 wp){ if(wp.y<uBase-40.0||wp.y>uTop+700.0) return 0.0;
+        vec3 np=wp; np.xz-=uWind*uTime*3.0;
+        float c=mix(uAmbient,1.0,smoothstep(0.40,0.82,cov(wp.xz)));
+        float topN=(texture(uNoise, wp*0.00010).g-0.5)*900.0;
+        float g=prof(wp.y,c,topN); if(g<=0.0) return 0.0;
+        float d=(texture(uNoise, np*0.00020).r*1.5 + c - 1.0)*g; if(d<=0.0) return 0.0;
+        d-=0.32*texture(uNoise, np*0.0011).g;
+        return clamp(d*2.2,0.0,1.0); }
+      float densL(vec3 wp){ if(wp.y<uBase-40.0||wp.y>uTop+700.0) return 0.0;
+        vec3 np=wp; np.xz-=uWind*uTime*3.0;
+        float c=mix(uAmbient,1.0,smoothstep(0.40,0.82,cov(wp.xz))); float g=prof(wp.y,c,0.0); if(g<=0.0) return 0.0;
+        return clamp((texture(uNoise, np*0.00020).r*1.5 + c - 1.0)*g*2.2,0.0,1.0); }
+      float hg(float a,float g){ float g2=g*g; return (1.0-g2)/(12.5664*pow(1.0+g2-2.0*g*a,1.5)); }
+      void main(){
+        vec4 far=uInvVP*vec4(vUv*2.0-1.0,1.0,1.0); vec3 rd=normalize(far.xyz/far.w-uCamPos), ro=uCamPos;
+        float zr=texture(tDepth,vUv).x*2.0-1.0; float linEye=(2.0*uNear*uFar)/(uFar+uNear-zr*(uFar-uNear));
+        float tTer=linEye/max(dot(rd,uCamFwd),1e-3);
+        float tE,tX; if(abs(rd.y)<1e-4){ if(ro.y<uBase||ro.y>uTop+700.0){ fragColor=vec4(0.0); return; } tE=0.0; tX=16000.0; }
+        else { float ta=(uBase-ro.y)/rd.y, tb=(uTop+700.0-ro.y)/rd.y; tE=min(ta,tb); tX=max(ta,tb); }
+        tE=max(tE,0.0); tX=min(tX,min(tTer,16000.0)); if(tX<=tE){ fragColor=vec4(0.0); return; }
+        float dt=(tX-tE)/32.0; float t=tE+fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5)*dt;
+        float T=1.0; vec3 L=vec3(0.0); float ph=mix(hg(dot(rd,uSunDir),0.72),hg(dot(rd,uSunDir),-0.22),0.5);
+        for(int i=0;i<32;i++){ if(T<0.03) break; vec3 wp=ro+rd*t; float d=density(wp);
+          if(d>0.01){ float ls=0.0; for(int j=1;j<=4;j++) ls+=densL(wp+uSunDir*float(j)*150.0);
+            float sun=exp(-ls*150.0*0.005); float pw=1.0-exp(-d*2.2);
+            float hf=clamp((wp.y-uBase)/(uTop-uBase),0.0,1.0); vec3 amb=mix(uSkyGnd,uSkyTop,hf)*0.3;
+            vec3 ms=uSunGlow*pow(sun,0.4)*0.28; vec3 sc=(uSunCol*(sun*(ph+0.18)*3.2)+amb+ms)*pw;
+            float a=d*0.025*dt; L+=T*sc*a; T*=exp(-a); }
+          t+=dt; }
+        float fog=1.0-exp(-((tE+tX)*0.5)*0.000068); L=mix(L,uFog*(1.0-T),fog);
+        fragColor=vec4(L,1.0-T); }`
+  });
+  compositeMat=new THREE.ShaderMaterial({ depthTest:false, depthWrite:false,
+    uniforms:{ tColor:{value:null}, tCloud:{value:null} },
+    vertexShader:`varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position.xy,0.0,1.0); }`,
+    fragmentShader:`precision highp float; varying vec2 vUv; uniform sampler2D tColor,tCloud;
+      vec3 s(vec3 c){ c=clamp(c,0.0,1.0); return mix(c*12.92, 1.055*pow(c,vec3(1.0/2.4))-0.055, step(0.0031308,c)); }
+      void main(){ vec3 col=texture2D(tColor,vUv).rgb; vec4 cl=texture2D(tCloud,vUv); gl_FragColor=vec4(s(col*(1.0-cl.a)+cl.rgb),1.0); }`
+  });
+  makeVolRTs();
+}
+function makeVolRTs(){
+  renderer.getDrawingBufferSize(_v2); const W=Math.max(2,_v2.x|0), H=Math.max(2,_v2.y|0);
+  const dt=new THREE.DepthTexture(W,H); dt.type=THREE.UnsignedIntType;
+  sceneRT=new THREE.WebGLRenderTarget(W,H,{type:THREE.HalfFloatType, depthBuffer:true, depthTexture:dt, minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter});
+  cloudRT=new THREE.WebGLRenderTarget(Math.max(2,(W*0.5)|0),Math.max(2,(H*0.5)|0),{type:THREE.HalfFloatType, depthBuffer:false, minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter});
+}
+function resizeVolRTs(){ if(sceneRT){ renderer.getDrawingBufferSize(_v2); const W=Math.max(2,_v2.x|0),H=Math.max(2,_v2.y|0); sceneRT.setSize(W,H); cloudRT.setSize(Math.max(2,(W*0.5)|0),Math.max(2,(H*0.5)|0)); } }
+function updateCoverage(){
+  const ccx=Math.round(glider.pos.x/CLOUD_CELL), ccz=Math.round(glider.pos.z/CLOUD_CELL);
+  if(ccx===covCX&&ccz===covCZ) return; covCX=ccx; covCZ=ccz;
+  const gx=glider.pos.x, gz=glider.pos.z;
+  for(let j=0;j<COV_N;j++)for(let i=0;i<COV_N;i++){ const wx=gx+(i/(COV_N-1)-0.5)*COV_SPAN, wz=gz+(j/(COV_N-1)-0.5)*COV_SPAN;
+    covData[j*COV_N+i]=Math.max(0,Math.min(255,((DESCENT?0:thermalSource(wx,wz))*255)|0)); }
+  covTex.needsUpdate=true; raymarchMat.uniforms.uCovOrigin.value.set(gx,gz); raymarchMat.uniforms.uAmbient.value=DESCENT?0.22:0.12;
+}
+
+/* ---------- orchestration ---------- */
+function updateClouds(){
+  const on1=cloudStyle===1;
+  cloudLayers.forEach(l=>l.mesh.visible=on1);
+  if(impMesh) impMesh.visible=on1;
+  if(on1){ updateImpostors(); }
+  else if(cloudStyle===2 && cloudCapable){ if(!volReady) makeVol(); updateCoverage(); }
+}
+function renderClouds(){
+  cloudLayers.forEach(l=>{ l.u.uTime.value=simTime; l.mesh.position.x=camera.position.x; l.mesh.position.z=camera.position.z; });
+  impUms.uTime.value=simTime; impUms.uCam.value.copy(camera.position);
+  if(cloudStyle===2 && cloudCapable && volReady){
+    camera.getWorldDirection(_camFwd); _vp.multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse);
+    const u=raymarchMat.uniforms; u.uInvVP.value.copy(_vp).invert(); u.uCamPos.value.copy(camera.position); u.uCamFwd.value.copy(_camFwd);
+    u.uNear.value=camera.near; u.uFar.value=camera.far; u.uTime.value=simTime; u.tDepth.value=sceneRT.depthTexture;
+    renderer.setRenderTarget(sceneRT); renderer.render(scene,camera);
+    fsQuad.material=raymarchMat; renderer.setRenderTarget(cloudRT); renderer.render(fsScene,fsCam);
+    compositeMat.uniforms.tColor.value=sceneRT.texture; compositeMat.uniforms.tCloud.value=cloudRT.texture;
+    fsQuad.material=compositeMat; renderer.setRenderTarget(null); renderer.render(fsScene,fsCam);
+  } else { renderer.setRenderTarget(null); renderer.render(scene,camera); }
+}
+function setCloudStyle(c){ cloudStyle=clamp(Math.round(c),0,2); prefSet('cloudstyle', cloudStyle); cloudCX=null; covCX=null;
+  if(cloudStyle===2 && cloudCapable && !volReady) makeVol();
+  updateClouds();
   const seg=document.getElementById('set-clouds'); if(seg) Array.from(seg.children).forEach(b=>b.classList.toggle('on', +b.dataset.c===cloudStyle)); }
 
 /* ===================== GLIDER (mesh + state) ===================== */
@@ -1652,11 +1779,9 @@ function loop(now){
   sun.position.copy(_rp).add(SUN_OFFSET); sun.target.position.copy(_rp); sun.target.updateMatrixWorld();
   sunDisc.position.copy(camera.position).addScaledVector(SUN_DIR,44000);
   updateAirParticles(frame||FIXED);
-  cloudUms.uTime.value=simTime; cloudUms.uCam.value.copy(camera.position);
-  cloudUms.uSunView.value.copy(SUN_DIR).transformDirection(camera.matrixWorldInverse);   // sun dir in view space (for per-fragment cloud lighting)
-  renderer.render(scene,camera);
+  renderClouds();
 }
-addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
+addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); resizeVolRTs(); });
 
 // menu backdrop
 glider.pos.set(0, Math.max(terrainHeight(0,0)+1300, 2700), 0);
@@ -1699,7 +1824,7 @@ window.__swooper={
   mapPeak(){ return +heatPeak.toFixed(2); },
   gfxState(){ return { q:gfxQ, pr:+renderer.getPixelRatio().toFixed(2), shadows:renderer.shadowMap.enabled }; },
   setGfx(q){ setGfx(q); },
-  cloudStyleState(){ return { style:cloudStyle, visible:cloudClouds?cloudClouds.visible:false, n:CLOUD_N }; },
+  cloudStyleState(){ return { style:cloudStyle, capable:cloudCapable, volReady:volReady, layers:cloudLayers.map(l=>l.mesh.visible), imp:impMesh?impMesh.visible:false }; },
   setCloudStyle(c){ setCloudStyle(c); },
   thermState(){ return { scale:+thermalScale.toFixed(2) }; },
   originState(){ return { oZ:originZ, oY:+originY.toFixed(0), gx:+glider.pos.x.toFixed(0), gz:+glider.pos.z.toFixed(0), gy:+glider.pos.y.toFixed(0), agl:+(glider.pos.y-terrainHeight(glider.pos.x,glider.pos.z)).toFixed(0), depth:+descDepth.toFixed(0) }; },
