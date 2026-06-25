@@ -277,7 +277,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 window.__swooper = {};
 try {
-const VERSION = '0.89';
+const VERSION = '0.90';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -733,8 +733,8 @@ let volCloudsPref=prefB('volclouds', !isMobile);        // master toggle (persis
 let cloudsOn=false, cloudScale=0.5, cloudSteps=40, cloudLight=6, cloudWorley=1.0, cloudMaxDist=16000, cloudDebugMode=2;
 // per-tier quality (index by gfxQ): GFX0 -> billboards, GFX1 med, GFX2 high
 const CLOUDCFG=[ null,
-  {scale:0.5, steps:28, light:4, worley:0.0, maxDist:12000},
-  {scale:0.5, steps:40, light:6, worley:1.0, maxDist:16000} ];
+  {scale:0.34, steps:22, light:3, worley:0.0, maxDist:11000},   // med: quarter-ish res, cheap
+  {scale:0.5,  steps:30, light:4, worley:1.0, maxDist:15000} ]; // high: half-res
 
 let sceneRT=null, cloudRT=null;
 const _v2=new THREE.Vector2(), _vp=new THREE.Matrix4(), _camFwd=new THREE.Vector3();
@@ -755,17 +755,30 @@ float hash3(vec3 p){ p=fract(p*0.3183099+vec3(0.1,0.2,0.3)); p+=dot(p,p.yzx+19.1
 float vnoise(vec3 p){ vec3 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
   return mix(mix(mix(hash3(i+vec3(0,0,0)),hash3(i+vec3(1,0,0)),f.x), mix(hash3(i+vec3(0,1,0)),hash3(i+vec3(1,1,0)),f.x),f.y),
              mix(mix(hash3(i+vec3(0,0,1)),hash3(i+vec3(1,0,1)),f.x), mix(hash3(i+vec3(0,1,1)),hash3(i+vec3(1,1,1)),f.x),f.y),f.z); }
-float fbm(vec3 p){ float a=0.5,s=0.0; for(int i=0;i<5;i++){ s+=a*vnoise(p); p*=2.02; a*=0.5; } return s; }
+float fbm(vec3 p){ float a=0.5,s=0.0; for(int i=0;i<4;i++){ s+=a*vnoise(p); p*=2.02; a*=0.5; } return s; }  // 4 oct (primary)
+float fbm2(vec3 p){ return vnoise(p)*0.65+vnoise(p*2.03+5.2)*0.35; }                                      // cheap 2 oct (light/top)
 float coverageAt(vec2 wxz){ vec2 uv=(wxz-uCovOrigin)/uCovSpan+0.5; return texture2D(tCov,clamp(uv,0.0,1.0)).r; }
-float heightGrad(float y){ return smoothstep(uBase,uBase+170.0,y)*(1.0-smoothstep(uTop-520.0,uTop,y)); }
+float profile(float y, float cov, float topN){
+  float topH=mix(uBase+450.0, uTop, cov)+topN;                  // taller over strong thermals + noisy bumps -> no flat ceiling
+  return smoothstep(uBase,uBase+150.0,y)*(1.0-smoothstep(topH-540.0,topH+130.0,y));
+}
 float density(vec3 wp){
-  float g=heightGrad(wp.y); if(g<=0.0) return 0.0;
+  if(wp.y<uBase-40.0||wp.y>uTop+700.0) return 0.0;                              // coarse slab cull (no noise)
   vec3 np=vec3(wp.x+uOrigin.x, wp.y, wp.z+uOrigin.z); np.xz-=uWind*uTime*3.0;   // drift downwind
   float cov=mix(uAmbient,1.0,smoothstep(0.40,0.82,coverageAt(wp.xz)));          // only STRONG thermals build cumulus; else sparse fair-weather
-  float base=fbm(np*0.00042);
-  float d=(base+cov-1.0)*g;                                                     // coverage raises the cloud line -> gaps of clear sky between thermals
-  if(uWorley>0.5) d-=0.10*fbm(np*0.0013); else d-=0.06*fbm(np*0.0024);
-  return clamp(d*2.2,0.0,1.0);
+  float topN=(fbm2(np*0.0006)-0.5)*900.0;                                       // bumpy cauliflower top (kills the flat ceiling)
+  float g=profile(wp.y,cov,topN); if(g<=0.0) return 0.0;
+  float d=(fbm(np*0.00042)+cov-1.0)*g;                                          // coverage raises the cloud line -> gaps of clear sky
+  if(d<=0.0) return 0.0;                                                        // EARLY OUT before the erosion octave
+  d-=(uWorley>0.5?0.13:0.08)*fbm(np*0.0016);                                    // 3D erosion -> fuzzy volumetric edges (only inside cloud)
+  return clamp(d*2.4,0.0,1.0);
+}
+float densityLight(vec3 wp){                                                    // cheap density for the sun light-march (2 oct, no erosion)
+  if(wp.y<uBase-40.0||wp.y>uTop+700.0) return 0.0;
+  vec3 np=vec3(wp.x+uOrigin.x, wp.y, wp.z+uOrigin.z); np.xz-=uWind*uTime*3.0;
+  float cov=mix(uAmbient,1.0,smoothstep(0.40,0.82,coverageAt(wp.xz)));
+  float g=profile(wp.y,cov,0.0); if(g<=0.0) return 0.0;
+  return clamp((fbm2(np*0.00042)+cov-1.0)*g*2.4,0.0,1.0);
 }
 float hg(float c,float g){ float g2=g*g; return (1.0-g2)/(12.5664*pow(1.0+g2-2.0*g*c,1.5)); }
 float dualHG(float c){ return mix(hg(c,0.72),hg(c,-0.22),0.5); }
@@ -775,8 +788,8 @@ void main(){
   float linEye=(2.0*uNear*uFar)/(uFar+uNear-zr*(uFar-uNear));
   float tTer=linEye/max(dot(rd,uCamFwd),1e-3);
   float tEnter,tExit;
-  if(abs(rd.y)<1e-4){ if(ro.y<uBase||ro.y>uTop){ gl_FragColor=vec4(0.0); return; } tEnter=0.0; tExit=uMaxDist; }
-  else { float ta=(uBase-ro.y)/rd.y, tb=(uTop-ro.y)/rd.y; tEnter=min(ta,tb); tExit=max(ta,tb); }
+  if(abs(rd.y)<1e-4){ if(ro.y<uBase||ro.y>uTop+700.0){ gl_FragColor=vec4(0.0); return; } tEnter=0.0; tExit=uMaxDist; }
+  else { float ta=(uBase-ro.y)/rd.y, tb=(uTop+700.0-ro.y)/rd.y; tEnter=min(ta,tb); tExit=max(ta,tb); }
   tEnter=max(tEnter,0.0); tExit=min(tExit,min(tTer,uMaxDist));
   if(tExit<=tEnter){ gl_FragColor=vec4(0.0); return; }
   float dt=(tExit-tEnter)/float(uSteps);
@@ -785,7 +798,7 @@ void main(){
   for(int i=0;i<64;i++){ if(i>=uSteps||T<0.02) break;
     vec3 wp=ro+rd*t; float d=density(wp);
     if(d>0.002){
-      float ls=0.0; for(int j=0;j<8;j++){ if(j>=uLight) break; ls+=density(wp+uSunDir*float(j+1)*130.0); }
+      float ls=0.0; for(int j=0;j<8;j++){ if(j>=uLight) break; ls+=densityLight(wp+uSunDir*float(j+1)*130.0); }
       float sun=exp(-ls*130.0*0.006);
       float powder=1.0-exp(-d*2.2);
       float hf=clamp((wp.y-uBase)/(uTop-uBase),0.0,1.0);
