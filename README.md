@@ -27,15 +27,6 @@ The glider's wings bow up at the root under aerodynamic load (G), with a springy
 
 Single `index.html`, Three.js via CDN, no build step.
 
-## Music
-
-An optional in-game player streams calm, atmospheric tracks (controls top-left, volume in settings). All tracks are freely licensed; the CC-BY ones are credited here as required by their licenses:
-
-- **John Bartmann** — *Memory Shores*, *Mirrors of Faolan*, *Hemispheres*, *Surfacing* — **CC0 1.0** (public domain, no attribution required) — from the *Straylight Drones Collection* on the [Free Music Archive](https://freemusicarchive.org/music/John_Bartmann/).
-- **Kevin MacLeod** (incompetech.com) — *Atlantean Twilight*, *Bathed in the Light*, *Airship Serenity*, *Ascending the Vale* — **[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)**.
-- **Chris Zabriskie** — *The Temperature of the Air on the Bow of the Kaleetan*, *The Dark Glow of the Mountains* — **[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)**.
-- **Scott Buckley** (scottbuckley.com.au) — *The Distant Sun (Monomyth 1)* — **[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)**; *The Long Dark* — **[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)**.
-
 ## 3D model
 
 The glider mesh is **"UNDERPOLY: Free Sailplane Glider"** by **UNDERPOLY Project**, used under CC-BY-4.0 (attribution required); its ailerons and rudder are animated in-engine from the flight controls.

@@ -37,14 +37,6 @@
   #i-map{ right:22px; bottom:18px; }
   #i-g{ left:24px; top:54px; }
   #i-slip{ left:50%; top:80px; transform:translateX(-50%); }
-  #music{ position:absolute; left:24px; top:14px; pointer-events:auto; display:flex; align-items:center; gap:5px;
-    background:rgba(12,16,20,.42); border:1px solid rgba(223,230,236,.35); border-radius:5px; padding:4px 7px; max-width:236px;
-    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
-  #music button{ font:inherit; font-size:11px; line-height:1; padding:3px 6px; border-radius:3px; cursor:pointer;
-    color:#dfe6ec; background:rgba(223,230,236,.12); border:1px solid rgba(223,230,236,.4); }
-  #music button:hover{ border-color:#dfe6ec; }
-  #mu-title{ font-size:10px; letter-spacing:.3px; color:#dfe6ec; opacity:.8; white-space:nowrap; overflow:hidden;
-    text-overflow:ellipsis; max-width:120px; }
   #i-mc{ right:12px; top:30px; }
   #stallw{ position:absolute; top:112px; left:50%; transform:translateX(-50%); color:#ff5d4d; font-weight:800;
     font-size:15px; letter-spacing:2px; opacity:0; transition:opacity .1s; text-shadow:0 1px 6px rgba(0,0,0,.6); }
@@ -161,13 +153,6 @@
   <div id="tj-l" class="tjoy"><div class="tknob"></div></div>
   <div id="tj-r" class="tjoy"><div class="tknob"></div></div>
 </div>
-<div id="music">
-  <button id="mu-prev" title="предыдущий">◀</button>
-  <button id="mu-play" title="играть/пауза">▶</button>
-  <button id="mu-next" title="следующий">▶▶</button>
-  <div id="mu-title">—</div>
-</div>
-
 <div class="overlay" id="menu">
   <div>
     <div class="title">swooper</div>
@@ -198,7 +183,6 @@
       <label class="setrow"><input type="checkbox" id="set-sound"> звук ветра</label>
       <label class="setrow"><input type="checkbox" id="set-vario"> звук вариометра</label>
       <label class="setrow"><input type="checkbox" id="set-fx"> свист у рельефа</label>
-      <div class="setrow setrange"><span>музыка</span><input type="range" id="set-musicvol" min="0" max="1" step="0.02"><span class="rngend">громче</span></div>
 
       <div class="setgrp">Графика</div>
       <div class="setrow setseg"><span>качество</span><span class="seg" id="set-gfx"><button data-q="0">низк</button><button data-q="1">сред</button><button data-q="2">выс</button></span></div>
@@ -292,7 +276,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 window.__swooper = {};
 try {
-const VERSION = '0.87';
+const VERSION = '0.88';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -1041,7 +1025,6 @@ function openSettings(){ if(state!=='flying'&&state!=='paused') return; state='s
   document.getElementById('set-crash').checked=crashOn;
   document.getElementById('set-trails').checked=trailsOn;
   document.getElementById('set-fx').checked=fxOn;
-  document.getElementById('set-musicvol').value=music.volume;
   document.getElementById('set-therm').value=thermalScale;
   { const seg=document.getElementById('set-gfx'); Array.from(seg.children).forEach(btn=>btn.classList.toggle('on', +btn.dataset.q===gfxQ)); }
   for(const k in INSTR_EL){ const c=document.getElementById('set-'+k); if(c) c.checked=!!showInstr[k]; }
@@ -1058,7 +1041,6 @@ document.getElementById('set-vario').onchange=e=>{ setVarioOn(e.target.checked);
 document.getElementById('set-crash').onchange=e=>{ crashOn=e.target.checked; prefSet('crash', crashOn?'1':'0'); };
 document.getElementById('set-trails').onchange=e=>{ trailsOn=e.target.checked; prefSet('trails', trailsOn?'1':'0'); };
 document.getElementById('set-fx').onchange=e=>{ fxOn=e.target.checked; prefSet('fx', fxOn?'1':'0'); };
-document.getElementById('set-musicvol').oninput=e=>{ music.volume=clamp(parseFloat(e.target.value),0,1); prefSet('musicvol',music.volume); };
 document.getElementById('set-therm').oninput=e=>{ setThermals(parseFloat(e.target.value)); };
 document.getElementById('set-gfx').querySelectorAll('button').forEach(btn=>{ btn.onclick=()=>setGfx(+btn.dataset.q); });
 // instrument toggles + presets
@@ -1087,7 +1069,6 @@ document.getElementById('set-guide').onclick=openGuide;
 
 function startFlight(){
   initAudio();
-  if(musicOn && music.paused) music.play().catch(()=>{});   // first play needs this user gesture
   const g0=terrainHeight(0,0);
   glider.pos.set(0, DESCENT ? g0+650 : Math.max(g0+1300, 2700), 0);   // descent: start ~650 above the slope, ready to dive
   spawnY=glider.pos.y;                                  // depth = how far below spawn you've descended
@@ -1597,36 +1578,6 @@ function silenceAudio(){    // on pause: fade everything out so nothing hangs wh
   for(const g of [varioGain,rumbleGain,howlGain,buffLFOGain,jetGain]) if(g) g.gain.setTargetAtTime(0,now,0.05);
 }
 
-/* ===================== E2 — music player (streamed CC0 / CC-BY tracks) ===================== */
-// MP3 first (plays everywhere incl. Safari); Ogg/Oga last (skip-on-error covers any Safari Ogg gaps)
-const TRACKS=[
-  {t:'Memory Shores', a:'John Bartmann', l:'CC0', u:'https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/85XC6qMepgcrvYLQxas6DqAAuC6dlur1yUqnElj9.mp3'},
-  {t:'Atlantean Twilight', a:'Kevin MacLeod', l:'CC-BY 3.0', u:'https://archive.org/download/Incompetech/mp3-royaltyfree/Atlantean%20Twilight.mp3'},
-  {t:'Mirrors of Faolan', a:'John Bartmann', l:'CC0', u:'https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/S9qAdnUY1W51BcyDgeM0pMRJlywx9Jv0L5MFxOTW.mp3'},
-  {t:'Bathed in the Light', a:'Kevin MacLeod', l:'CC-BY 3.0', u:'https://archive.org/download/Incompetech/mp3-royaltyfree/Bathed%20in%20the%20Light.mp3'},
-  {t:'Hemispheres', a:'John Bartmann', l:'CC0', u:'https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/gfjPLnFOOifvsIcgJ6cCcC9x9jND1faHcX2wAyMt.mp3'},
-  {t:'Airship Serenity', a:'Kevin MacLeod', l:'CC-BY 3.0', u:'https://archive.org/download/Incompetech/mp3-royaltyfree/Airship%20Serenity.mp3'},
-  {t:'Surfacing', a:'John Bartmann', l:'CC0', u:'https://files.freemusicarchive.org/storage-freemusicarchive-org/tracks/89GA2EXnx6cgjciyurGhXmbMzYVyrf26Jkh7Ga1d.mp3'},
-  {t:'Ascending the Vale', a:'Kevin MacLeod', l:'CC-BY 3.0', u:'https://archive.org/download/Incompetech/mp3-royaltyfree/Ascending%20the%20Vale.mp3'},
-  {t:'The Temperature of the Air on the Bow of the Kaleetan', a:'Chris Zabriskie', l:'CC-BY 4.0', u:'https://upload.wikimedia.org/wikipedia/commons/6/6b/Chris_Zabriskie_-_01_-_The_Temperature_of_the_Air_on_the_Bow_of_the_Kaleetan.ogg'},
-  {t:'The Distant Sun (Monomyth 1)', a:'Scott Buckley', l:'CC-BY 4.0', u:'https://upload.wikimedia.org/wikipedia/commons/0/01/Scott_Buckley_-_The_Distant_Sun_%28Monomyth_1%29.oga'},
-  {t:'The Dark Glow of the Mountains', a:'Chris Zabriskie', l:'CC-BY 4.0', u:'https://upload.wikimedia.org/wikipedia/commons/a/af/Chris_Zabriskie_-_01_-_The_Dark_Glow_of_the_Mountains.ogg'},
-  {t:'The Long Dark', a:'Scott Buckley', l:'CC-BY 3.0', u:'https://upload.wikimedia.org/wikipedia/commons/9/95/Scott_Buckley_%E2%80%93_The_Long_Dark_%28Ambient_Neoclassical_Piano%29.ogg'},
-];
-const music=new Audio(); music.preload='none'; music.volume=clamp(prefN('musicvol',0.5),0,1);   // fetch only on play (no load-time churn)
-let musicOn=prefB('music',true), musicIdx=clamp(Math.round(prefN('musictrack',0)),0,TRACKS.length-1), musicErr=0;
-const muTitle=document.getElementById('mu-title'), muPlay=document.getElementById('mu-play');
-function musicLoad(i,play){ musicIdx=((i%TRACKS.length)+TRACKS.length)%TRACKS.length; prefSet('musictrack',musicIdx);
-  const tr=TRACKS[musicIdx]; music.src=tr.u; muTitle.textContent=tr.t+' · '+tr.a; muTitle.title=tr.t+' — '+tr.a+' ('+tr.l+')';
-  if(play&&musicOn) music.play().catch(()=>{}); }
-function musicSkip(d){ musicErr=0; musicLoad(musicIdx+d,true); }
-function musicToggle(){ musicOn=!musicOn; prefSet('music',musicOn?'1':'0'); muPlay.textContent=musicOn?'⏸':'▶';
-  if(musicOn) music.play().catch(()=>{}); else music.pause(); }
-music.addEventListener('ended',()=>musicSkip(1));
-music.addEventListener('error',()=>{ if(musicOn && musicErr++<TRACKS.length){ setTimeout(()=>musicLoad(musicIdx+1,true),60); } });   // skip a dead stream
-muPlay.onclick=musicToggle; document.getElementById('mu-prev').onclick=()=>musicSkip(-1); document.getElementById('mu-next').onclick=()=>musicSkip(1);
-muPlay.textContent=musicOn?'⏸':'▶'; musicLoad(musicIdx,false);   // load now; first play happens on the START gesture
-
 /* ===================== LOOP ===================== */
 let last=performance.now(), acc=0;
 const fpsEl=document.getElementById('fps'); let fpsEMA=60, fpsT=0;
@@ -1700,8 +1651,6 @@ window.__swooper={
   audioNodes(){ return { rumble:!!rumbleGain, howl:!!howlGain, buff:!!buffLFOGain, ctx:audioCtx?audioCtx.state:'none' }; },
   enclosure(){ return +canyonEnclosure().toFixed(2); },
   mapPeak(){ return +heatPeak.toFixed(2); },
-  music(){ return { idx:musicIdx, on:musicOn, vol:+music.volume.toFixed(2), title:TRACKS[musicIdx].t, artist:TRACKS[musicIdx].a, n:TRACKS.length, ct:+(music.currentTime||0).toFixed(1), paused:music.paused, dur:Math.round(music.duration||0) }; },
-  musicNext(){ musicSkip(1); }, musicPrev(){ musicSkip(-1); },
   gfxState(){ return { q:gfxQ, pr:+renderer.getPixelRatio().toFixed(2), shadows:renderer.shadowMap.enabled }; },
   setGfx(q){ setGfx(q); },
   thermState(){ return { scale:+thermalScale.toFixed(2) }; },
