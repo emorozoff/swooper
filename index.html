@@ -186,6 +186,7 @@
 
       <div class="setgrp">Графика</div>
       <div class="setrow setseg"><span>качество</span><span class="seg" id="set-gfx"><button data-q="0">низк</button><button data-q="1">сред</button><button data-q="2">выс</button></span></div>
+      <div class="setrow setseg"><span>небо</span><span class="seg" id="set-sky"><button data-s="0">тек</button><button data-s="1">HDRI</button><button data-s="2">Sky</button><button data-s="3">H+обл</button></span></div>
       <label class="setrow"><input type="checkbox" id="set-trails"> следы за крыльями</label>
       <label class="setrow"><input type="checkbox" id="set-i_fps"> показывать FPS</label>
 
@@ -274,9 +275,10 @@
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { Sky } from 'three/addons/objects/Sky.js';
 window.__swooper = {};
 try {
-const VERSION = '0.93';
+const VERSION = '0.94';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -438,6 +440,63 @@ const skyMat=new THREE.ShaderMaterial({ side:THREE.BackSide, fog:false, depthWri
       col=mix(col,haloTint,clamp(pow(md,haloExp)*haloStr,0.0,1.0));
       gl_FragColor=vec4(col,1.0); }`});
 const sky=new THREE.Mesh(new THREE.SphereGeometry(48000,24,16),skyMat); sky.renderOrder=-2; scene.add(sky);
+
+/* ===================== SKY/CLOUD MODES — switchable to compare =====================
+   0 = текущее небо (custom shader skydome + sun disc, no clouds)
+   1 = A: скачанная закатная HDRI-панорама (CC0 Poly Haven) как фон+небо
+   2 = B: three.js Sky.js (атмосфера+солнце, ACES tonemap) + ближний бегущий FBM-слой облаков
+   3 = C: HDRI + тот же ближний FBM-слой (дальний реализм + ближний параллакс) */
+let skyMode=clamp(Math.round(prefN('skymode',0)),0,3);
+// --- A/C: downloaded sunset HDRI (self-hosted JPG equirect) ---
+let hdriTex=null, hdriPending=false;
+function loadHDRI(){ if(hdriTex||hdriPending) return; hdriPending=true;
+  new THREE.TextureLoader().load('./sky/sunset.jpg', t=>{ t.mapping=THREE.EquirectangularReflectionMapping; t.colorSpace=THREE.SRGBColorSpace; hdriTex=t; applySkyMode(); }, undefined, ()=>{ hdriPending=false; }); }
+// --- B: three.js Sky.js ---
+let skyJs=null;
+function makeSkyJs(){ if(skyJs) return; skyJs=new Sky(); skyJs.scale.setScalar(45000);
+  const u=skyJs.material.uniforms; u['turbidity'].value=7.0; u['rayleigh'].value=2.0; u['mieCoefficient'].value=0.005; u['mieDirectionalG'].value=0.85; u['sunPosition'].value.copy(SUN_DIR);
+  skyJs.renderOrder=-2; skyJs.visible=false; scene.add(skyJs); }
+// --- B/C: cheap scrolling-FBM cloud near-layer (gives the parallax a skybox lacks) ---
+const NLAYER_FRAG=`precision highp float;
+  uniform float uTime,uScale,uCover,uAlpha; uniform vec2 uWind,uSunXZ; uniform vec3 uSun,uShade,uFog;
+  varying vec2 vWxz; varying float vFog;
+  float h2(vec2 p){ p=fract(p*vec2(123.34,345.45)); p+=dot(p,p+34.345); return fract(p.x*p.y); }
+  float vn(vec2 p){ vec2 i=floor(p),f=fract(p); f=f*f*(3.0-2.0*f); return mix(mix(h2(i),h2(i+vec2(1,0)),f.x),mix(h2(i+vec2(0,1)),h2(i+vec2(1,1)),f.x),f.y); }
+  float fbm(vec2 p){ float a=0.5,s=0.0; for(int i=0;i<5;i++){ s+=a*vn(p); p=p*2.03+vec2(1.7,9.2); a*=0.5; } return s; }
+  void main(){ vec2 q=vWxz*uScale+uWind*uTime*0.5; float d=fbm(q);
+    float cov=smoothstep(uCover,uCover+0.26,d); if(cov<0.01) discard;
+    float ds=fbm(q+uSunXZ*0.5); float lit=clamp(0.5+(d-ds)*2.1,0.16,1.0);
+    vec3 col=mix(uShade,uSun,lit); col=mix(col,uFog,vFog);
+    gl_FragColor=vec4(col, cov*(1.0-vFog*0.6)*uAlpha); }`;
+const NLAYER_VERT=`precision highp float; varying vec2 vWxz; varying float vFog;
+  void main(){ vec4 wp=modelMatrix*vec4(position,1.0); vWxz=wp.xz; vec4 mv=modelViewMatrix*vec4(position,1.0); vFog=1.0-exp(-(-mv.z)*0.000042); gl_Position=projectionMatrix*mv; }`;
+function makeNLayer(y,scale,cover,alpha,shadeMul){
+  const u={ uTime:{value:0}, uScale:{value:scale}, uCover:{value:cover}, uAlpha:{value:alpha}, uWind:{value:new THREE.Vector2(1.0,0.4)},
+    uSunXZ:{value:new THREE.Vector2(SUN_DIR.x,SUN_DIR.z).normalize()}, uSun:{value:PAL.haloTint.clone()}, uShade:{value:PAL.skyGround.clone().multiplyScalar(shadeMul)}, uFog:{value:PAL.fog.clone()} };
+  const m=new THREE.Mesh(new THREE.PlaneGeometry(95000,95000,1,1),
+    new THREE.ShaderMaterial({transparent:true,depthWrite:false,depthTest:true,side:THREE.DoubleSide,fog:false,uniforms:u,vertexShader:NLAYER_VERT,fragmentShader:NLAYER_FRAG}));
+  m.rotation.x=-Math.PI/2; m.position.y=y; m.frustumCulled=false; m.renderOrder=1; m.visible=false; scene.add(m); return {mesh:m,u,y}; }
+const nLayers=[ makeNLayer(4900,0.00022,0.54,0.85,0.95), makeNLayer(5400,0.00031,0.58,0.62,1.12) ];
+function applySkyMode(){
+  const useHDRI=(skyMode===1||skyMode===3), useSkyJs=(skyMode===2), useLayer=(skyMode===2||skyMode===3);
+  if(useHDRI && !hdriTex) loadHDRI();
+  if(useSkyJs) makeSkyJs();
+  sky.visible=(skyMode===0); sunDisc.visible=(skyMode===0);
+  if(skyJs) skyJs.visible=useSkyJs;
+  scene.background=(useHDRI && hdriTex)?hdriTex:null;
+  nLayers.forEach(l=>l.mesh.visible=useLayer);
+  const tm=useSkyJs?THREE.ACESFilmicToneMapping:THREE.NoToneMapping;       // Sky.js is authored for tonemapping
+  if(renderer.toneMapping!==tm){ renderer.toneMapping=tm; renderer.toneMappingExposure=useSkyJs?0.5:1.0;
+    scene.traverse(o=>{ if(o.isMesh && o.material){ (Array.isArray(o.material)?o.material:[o.material]).forEach(x=>x.needsUpdate=true); } }); }
+}
+function updateSky(){
+  const useLayer=(skyMode===2||skyMode===3);
+  if(skyJs && skyJs.visible) skyJs.position.copy(camera.position);
+  if(useLayer) nLayers.forEach(l=>{ l.u.uTime.value=simTime; l.mesh.position.x=camera.position.x; l.mesh.position.z=camera.position.z; });
+}
+function setSkyMode(s){ skyMode=clamp(Math.round(s),0,3); prefSet('skymode',skyMode); applySkyMode();
+  const seg=document.getElementById('set-sky'); if(seg) Array.from(seg.children).forEach(b=>b.classList.toggle('on', +b.dataset.s===skyMode)); }
+applySkyMode();
 function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
 
 /* ===================== TERRAIN — low-poly mountains, endless descent ===================== */
@@ -960,6 +1019,7 @@ function openSettings(){ if(state!=='flying'&&state!=='paused') return; state='s
   document.getElementById('set-fx').checked=fxOn;
   document.getElementById('set-therm').value=thermalScale;
   { const seg=document.getElementById('set-gfx'); Array.from(seg.children).forEach(btn=>btn.classList.toggle('on', +btn.dataset.q===gfxQ)); }
+  { const seg=document.getElementById('set-sky'); if(seg) Array.from(seg.children).forEach(b=>b.classList.toggle('on', +b.dataset.s===skyMode)); }
   for(const k in INSTR_EL){ const c=document.getElementById('set-'+k); if(c) c.checked=!!showInstr[k]; }
   document.getElementById('seedin2').value=seed; }
 // start menu seed field (reload to that world)
@@ -976,6 +1036,7 @@ document.getElementById('set-trails').onchange=e=>{ trailsOn=e.target.checked; p
 document.getElementById('set-fx').onchange=e=>{ fxOn=e.target.checked; prefSet('fx', fxOn?'1':'0'); };
 document.getElementById('set-therm').oninput=e=>{ setThermals(parseFloat(e.target.value)); };
 document.getElementById('set-gfx').querySelectorAll('button').forEach(btn=>{ btn.onclick=()=>setGfx(+btn.dataset.q); });
+document.getElementById('set-sky').querySelectorAll('button').forEach(b=>{ b.onclick=()=>setSkyMode(+b.dataset.s); });
 // instrument toggles + presets
 ['i_wind','i_map','i_baro','i_g','i_slip','i_mc','i_fps'].forEach(k=>{ const c=document.getElementById('set-'+k); if(c) c.onchange=e=>{ showInstr[k]=e.target.checked; prefSet(k, e.target.checked?'1':'0'); if(k==='i_baro'&&e.target.checked){ baroLen=0; baroT=0; } applyInstruments(); }; });
 { const PRESETS={ min:{i_wind:0,i_map:0,i_baro:0,i_g:0,i_slip:0,i_mc:0}, soar:{i_wind:1,i_map:1,i_baro:1,i_g:0,i_slip:0,i_mc:0}, all:{i_wind:1,i_map:1,i_baro:1,i_g:1,i_slip:1,i_mc:1} };
@@ -1540,6 +1601,7 @@ function loop(now){
   sky.position.copy(camera.position);
   sun.position.copy(_rp).add(SUN_OFFSET); sun.target.position.copy(_rp); sun.target.updateMatrixWorld();
   sunDisc.position.copy(camera.position).addScaledVector(SUN_DIR,44000);
+  updateSky();
   updateAirParticles(frame||FIXED);
   renderer.render(scene,camera);
 }
@@ -1586,6 +1648,8 @@ window.__swooper={
   mapPeak(){ return +heatPeak.toFixed(2); },
   gfxState(){ return { q:gfxQ, pr:+renderer.getPixelRatio().toFixed(2), shadows:renderer.shadowMap.enabled }; },
   setGfx(q){ setGfx(q); },
+  skyState(){ return { mode:skyMode, hdri:!!hdriTex, skyJs:skyJs?skyJs.visible:false, layers:nLayers.map(l=>l.mesh.visible), bg:!!scene.background, tone:renderer.toneMapping }; },
+  setSkyMode(s){ setSkyMode(s); },
   thermState(){ return { scale:+thermalScale.toFixed(2) }; },
   originState(){ return { oZ:originZ, oY:+originY.toFixed(0), gx:+glider.pos.x.toFixed(0), gz:+glider.pos.z.toFixed(0), gy:+glider.pos.y.toFixed(0), agl:+(glider.pos.y-terrainHeight(glider.pos.x,glider.pos.z)).toFixed(0), depth:+descDepth.toFixed(0) }; },
   _tp(x,y,z){ glider.pos.set(x,y,z); prevPos.copy(glider.pos); },
