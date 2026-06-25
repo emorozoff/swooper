@@ -186,7 +186,7 @@
 
       <div class="setgrp">Графика</div>
       <div class="setrow setseg"><span>качество</span><span class="seg" id="set-gfx"><button data-q="0">низк</button><button data-q="1">сред</button><button data-q="2">выс</button></span></div>
-      <label class="setrow"><input type="checkbox" id="set-volclouds"> объёмные облака <span class="rngend">(выс/сред)</span></label>
+      <div class="setrow setseg"><span>облака</span><span class="seg" id="set-clouds"><button data-c="0">выкл</button><button data-c="1">спрайты A</button><button data-c="2">объём B</button></span></div>
       <label class="setrow"><input type="checkbox" id="set-trails"> следы за крыльями</label>
       <label class="setrow"><input type="checkbox" id="set-i_fps"> показывать FPS</label>
 
@@ -277,7 +277,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 window.__swooper = {};
 try {
-const VERSION = '0.90';
+const VERSION = '0.91';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -615,7 +615,7 @@ function rebaseDescent(){
     if(ch.cx!=null){ ch.cx+=Sx/CHUNK; ch.cz+=Sz/CHUNK; } }
   for(let i=0;i<AIR_N*3;i+=3){ airPos[i]+=Sx; airPos[i+1]+=Sy; airPos[i+2]+=Sz; }
   for(const tr of [trailR,trailL]){ const c=tr.cpos; for(let i=0;i<c.length;i+=3){ c[i]+=Sx; c[i+1]+=Sy; c[i+2]+=Sz; } }
-  cloudCX=null; covCX=null;                             // clouds rebuild over the shifted field (cheap; ambient-only in descent)
+  cloudCX=null;                                        // clouds rebuild over the shifted field
 }
 // thermals slider: scale the solar drive, then force clouds to rebuild over the new source field
 function setThermals(scale){
@@ -650,230 +650,111 @@ function updateAirParticles(dt){
   airParticles.geometry.attributes.position.needsUpdate=true;
 }
 
-/* ===================== CLOUDS (cumulus over thermals + sparse ambiance) =====================
-   Instanced camera-facing billboards. Cumulus cluster on the TOP of every strong
-   thermal column -> a landmark you aim for to find lift (like real soaring). A few
-   sparse fair-weather puffs elsewhere for depth. Streamed in a cell grid round the craft. */
-const CLOUD_CELL=1700, CLOUD_R=6, CLOUD_PUFFS=5, CLOUD_BASE=3900, CLOUD_THRESH=0.42;
-const CLOUD_N=(2*CLOUD_R+1)*(2*CLOUD_R+1)*CLOUD_PUFFS;
+/* ===================== CLOUDS (enhanced sprites — A flat clusters / B volumetric clusters) =====================
+   Instanced camera-facing sprites with a crisp cauliflower texture, lit DIRECTIONALLY by the sun:
+   per-fragment sphere-imposter normal -> bright sun-side / dark base / bright rim, plus a per-puff
+   sun-shade from its outward offset in the cloud. Two SWITCHABLE styles:
+     A (1) = flat fuller clusters — a full 2D-ish cumulus silhouette from several overlapping sprites;
+     B (2) = 3D volumetric clusters — a lumpy ball of sprites you can fly under / see from any angle.
+   Slow wind drift + size 'breathing' in-shader; sprites fade out toward the streamed-grid edge into the
+   FogExp2 haze, so the grid restreams with no pop-in. Cumulus mark thermals; sparse fair-weather puffs. */
+const CLOUD_CELL=1700, CLOUD_R=6, CLOUD_BASE=3900, CLOUD_THRESH=0.42;
+const CLOUD_PER=12;                                          // sprite slots per cell (max cluster size)
+const CLOUD_N=(2*CLOUD_R+1)*(2*CLOUD_R+1)*CLOUD_PER;
+const CLOUD_FADE_R=CLOUD_R*CLOUD_CELL*0.92;                  // sprites fade out past this -> no pop on restream
+let cloudStyle=clamp(Math.round(prefN('cloudstyle',1)),0,2);// 0 off, 1 A flat, 2 B volumetric
 let cloudCX=null, cloudCZ=null;
-const cloudCenter=new THREE.InstancedBufferAttribute(new Float32Array(CLOUD_N*3),3);
+const cloudCenter=new THREE.InstancedBufferAttribute(new Float32Array(CLOUD_N*3),3);   // world sprite pos
+const cloudNormal=new THREE.InstancedBufferAttribute(new Float32Array(CLOUD_N*3),3);   // puff outward dir (cloud-scale sun shade)
 const cloudSize  =new THREE.InstancedBufferAttribute(new Float32Array(CLOUD_N),1);
-const cloudBright=new THREE.InstancedBufferAttribute(new Float32Array(CLOUD_N),1);
-let billboardClouds=null;   // the instanced-billboard cloud mesh (hoisted: toggled off when volumetric clouds are on)
+const cloudSeed  =new THREE.InstancedBufferAttribute(new Float32Array(CLOUD_N),1);
+let cloudClouds=null;
+function makeCloudTex(seed){                                 // lumpy cauliflower puff (several soft lobes)
+  const N=128, cv=document.createElement('canvas'); cv.width=cv.height=N; const c=cv.getContext('2d'); const rnd=mulberry32(seed>>>0);
+  for(let i=0;i<7;i++){ const a=rnd()*6.2831, cx=N*0.5+Math.cos(a)*N*0.18*rnd(), cy=N*0.5+Math.sin(a)*N*0.16*rnd(), rr=N*(0.17+0.20*rnd());
+    const g=c.createRadialGradient(cx,cy,1,cx,cy,rr); g.addColorStop(0,'rgba(255,255,255,0.9)'); g.addColorStop(0.6,'rgba(255,255,255,0.45)'); g.addColorStop(1,'rgba(255,255,255,0)');
+    c.fillStyle=g; c.beginPath(); c.arc(cx,cy,rr,0,6.2831); c.fill(); }
+  c.globalCompositeOperation='lighter';
+  const g0=c.createRadialGradient(N*0.5,N*0.5,2,N*0.5,N*0.5,N*0.42); g0.addColorStop(0,'rgba(255,255,255,1)'); g0.addColorStop(0.55,'rgba(255,255,255,0.8)'); g0.addColorStop(1,'rgba(255,255,255,0)');
+  c.fillStyle=g0; c.beginPath(); c.arc(N*0.5,N*0.5,N*0.42,0,6.2831); c.fill();
+  const t=new THREE.CanvasTexture(cv); t.needsUpdate=true; return t;
+}
+const cloudUms={ map:{value:makeCloudTex(0x9e37)}, uSun:{value:PAL.haloTint.clone()}, uShade:{value:PAL.skyGround.clone()},
+  uRim:{value:PAL.sunGlow.clone()}, uFog:{value:PAL.fog.clone()}, uSunView:{value:new THREE.Vector3()}, uSunWorld:{value:SUN_DIR.clone()},
+  uTime:{value:0}, uWind:{value:new THREE.Vector2(1.0,0.4)}, uCam:{value:new THREE.Vector3()}, uFadeR:{value:CLOUD_FADE_R} };
 {
-  const cv=document.createElement('canvas'); cv.width=cv.height=64; const g2=cv.getContext('2d');
-  const grd=g2.createRadialGradient(32,32,1,32,32,31);
-  grd.addColorStop(0,'rgba(255,255,255,1)'); grd.addColorStop(0.45,'rgba(255,255,255,0.72)'); grd.addColorStop(1,'rgba(255,255,255,0)');
-  g2.fillStyle=grd; g2.fillRect(0,0,64,64);
-  const tex=new THREE.CanvasTexture(cv);
   const quad=new THREE.PlaneGeometry(1,1);
   const cgeo=new THREE.InstancedBufferGeometry();
   cgeo.setIndex(quad.index); cgeo.setAttribute('position',quad.attributes.position); cgeo.setAttribute('uv',quad.attributes.uv);
-  cgeo.setAttribute('aCenter',cloudCenter); cgeo.setAttribute('aSize',cloudSize); cgeo.setAttribute('aBright',cloudBright);
+  cgeo.setAttribute('aCenter',cloudCenter); cgeo.setAttribute('aNormal',cloudNormal); cgeo.setAttribute('aSize',cloudSize); cgeo.setAttribute('aSeed',cloudSeed);
   cgeo.instanceCount=CLOUD_N;
-  const cmat=new THREE.ShaderMaterial({
-    transparent:true, depthWrite:false,
-    uniforms:{ map:{value:tex}, sun:{value:PAL.haloTint.clone()}, shade:{value:PAL.skyGround.clone()} },   // sunset-lit tops / dusk undersides
-    vertexShader:`attribute vec3 aCenter; attribute float aSize; attribute float aBright;
-      varying vec2 vUv; varying float vB;
-      void main(){ vUv=uv; vB=aBright;
-        vec4 mv=modelViewMatrix*vec4(aCenter,1.0);
-        mv.xy += position.xy*aSize;
-        gl_Position=projectionMatrix*mv; }`,
-    fragmentShader:`uniform sampler2D map; uniform vec3 sun; uniform vec3 shade; varying vec2 vUv; varying float vB;
-      void main(){ float a=texture2D(map,vUv).a; if(a<0.01) discard;
-        gl_FragColor=vec4(mix(shade,sun,clamp(vB,0.0,1.0)), a); }`
+  const cmat=new THREE.ShaderMaterial({ transparent:true, depthWrite:false, depthTest:true, uniforms:cloudUms,
+    vertexShader:`attribute vec3 aCenter; attribute vec3 aNormal; attribute float aSize; attribute float aSeed;
+      uniform float uTime, uFadeR; uniform vec2 uWind; uniform vec3 uCam, uSunWorld;
+      varying vec2 vUv; varying float vShade, vFade, vHaze;
+      void main(){ vUv=uv;
+        vec3 wc=aCenter; wc.xz += uWind*uTime*4.0;                                   // slow wind drift
+        vShade = dot(aNormal, uSunWorld);                                            // per-puff cloud-scale sun shade
+        float dr=length(wc.xz-uCam.xz); vFade = 1.0 - smoothstep(uFadeR*0.72, uFadeR, dr);   // dissolve at grid edge (no pop)
+        float breathe = 1.0 + 0.05*sin(uTime*0.5 + aSeed*6.2831);
+        vec4 mv = modelViewMatrix*vec4(wc,1.0);
+        vHaze = 1.0 - exp(-(-mv.z)*0.000068);                                        // aerial perspective (matches FogExp2)
+        mv.xy += position.xy * aSize * breathe;
+        gl_Position = projectionMatrix*mv; }`,
+    fragmentShader:`uniform sampler2D map; uniform vec3 uSun,uShade,uRim,uSunView,uFog;
+      varying vec2 vUv; varying float vShade, vFade, vHaze;
+      void main(){ float a=texture2D(map,vUv).a; if(a<0.02) discard;
+        vec2 pp=(vUv-0.5)*2.0; float r2=dot(pp,pp); if(r2>1.0) discard;
+        vec3 n=vec3(pp, sqrt(max(0.0,1.0-r2)));                                       // sphere-imposter normal (view space)
+        float ndl=dot(n, uSunView);
+        float lit=clamp(ndl*0.5+0.5, 0.0, 1.0);
+        float cs=clamp(vShade*0.5+0.5, 0.0, 1.0);
+        vec3 base=mix(uShade, uSun, clamp(cs*0.55+lit*0.55, 0.0, 1.0));
+        float rim=pow(1.0-n.z,3.0)*clamp(ndl+0.2, 0.0, 1.0);                          // silver lining toward sun
+        vec3 col=base + uRim*rim*0.7;
+        col=mix(col, uFog, clamp(vHaze,0.0,0.85));
+        gl_FragColor=vec4(col, a*clamp(vFade,0.0,1.0)); }`
   });
-  billboardClouds=new THREE.Mesh(cgeo,cmat); billboardClouds.frustumCulled=false; billboardClouds.renderOrder=2; scene.add(billboardClouds);
+  cloudClouds=new THREE.Mesh(cgeo,cmat); cloudClouds.frustumCulled=false; cloudClouds.renderOrder=2; cloudClouds.visible=cloudStyle!==0; scene.add(cloudClouds);
 }
 function updateClouds(){
-  if(cloudsOn) return;   // volumetric clouds replace the billboards
+  if(cloudStyle===0){ if(cloudClouds) cloudClouds.visible=false; return; }
+  if(cloudClouds) cloudClouds.visible=true;
   const ccx=Math.round(glider.pos.x/CLOUD_CELL), ccz=Math.round(glider.pos.z/CLOUD_CELL);
   if(ccx===cloudCX&&ccz===cloudCZ) return;
   cloudCX=ccx; cloudCZ=ccz;
-  const C=cloudCenter.array, S=cloudSize.array, B=cloudBright.array;
+  const C=cloudCenter.array, Nr=cloudNormal.array, S=cloudSize.array, Sd=cloudSeed.array, vol=cloudStyle===2;
   let p=0;
   for(let dz=-CLOUD_R;dz<=CLOUD_R;dz++)for(let dx=-CLOUD_R;dx<=CLOUD_R;dx++){
     const cx=ccx+dx, cz=ccz+dz, wx=cx*CLOUD_CELL, wz=cz*CLOUD_CELL;
-    const s=thermalSource(wx,wz);                                       // cumulus over the sun-heated (bright) slopes
-    const ambient = s<=CLOUD_THRESH && hash2(cx*7+1, cz*13+5)>0.70;     // sparse fair-weather puffs
-    const base=Math.max(CLOUD_BASE, terrainHeight(wx,wz)+500);
-    for(let k=0;k<CLOUD_PUFFS;k++){
+    const s=thermalSource(wx,wz), isCloud=s>CLOUD_THRESH;
+    const ambient = !isCloud && hash2(cx*7+1, cz*13+5)>0.74;            // sparse fair-weather puffs
+    const cyc=Math.max(CLOUD_BASE, terrainHeight(wx,wz)+500)+(isCloud?120+s*240:240);
+    const R=isCloud ? 260+520*s : 200, K=isCloud?CLOUD_PER:(ambient?3:0);
+    for(let k=0;k<CLOUD_PER;k++){
       const o=p*3;
-      if(s>CLOUD_THRESH){                                               // cumulus marking a thermal
-        const h1=hash2(cx*131+k*17, cz*977+k*7), h2=hash2(cx*53+k*3, cz*191+k*29), h3=hash2(cx*311+k, cz*97+k*13);
-        const rad=70+360*s*Math.sqrt(h1), ang=h2*6.2831;
-        C[o]=wx+Math.cos(ang)*rad*1.25; C[o+1]=base+(h3-0.5)*170+k*66+s*230; C[o+2]=wz+Math.sin(ang)*rad;
-        S[p]=(360+560*s)*(0.55+0.7*h3); B[p]=0.5+0.5*h2;
-      } else if(ambient && k<2){                                        // wispy ambiance puff
-        const h1=hash2(cx*61+k*9, cz*43+k*11), h2=hash2(cx*23+k, cz*7+k*5);
-        C[o]=wx+(h1-0.5)*700; C[o+1]=base+520+(h2-0.5)*240; C[o+2]=wz+(h2-0.5)*700;
-        S[p]=300+220*h1; B[p]=0.82;
+      if(k<K){
+        const h1=hash2(cx*131+k*17, cz*977+k*7), h2=hash2(cx*53+k*3, cz*191+k*29), h3=hash2(cx*311+k, cz*97+k*13), h4=hash2(cx*17+k*5, cz*7+k*19);
+        let ox,oy,oz;
+        if(vol){                                                         // B: lumpy 3D ellipsoid (cauliflower ball)
+          const u=h1*6.2831, v=Math.acos(2*h2-1), rr=R*(0.32+0.68*Math.cbrt(h3));
+          ox=Math.cos(u)*Math.sin(v)*rr; oz=Math.sin(u)*Math.sin(v)*rr; oy=Math.cos(v)*rr*0.6+R*0.12;
+        } else {                                                         // A: flat fuller disc (full silhouette)
+          const u=h1*6.2831, rr=R*Math.sqrt(h2)*1.2;
+          ox=Math.cos(u)*rr; oz=Math.sin(u)*rr*0.9; oy=(h3-0.5)*R*0.3+k*7;
+        }
+        C[o]=wx+ox; C[o+1]=cyc+oy; C[o+2]=wz+oz;
+        const ny=oy+R*0.25, nl=Math.hypot(ox,ny,oz)||1; Nr[o]=ox/nl; Nr[o+1]=ny/nl; Nr[o+2]=oz/nl;   // outward dir (sun shade), biased up
+        S[p]=(vol? 260+360*s : 330+470*s)*(0.6+0.7*h4); Sd[p]=h1;   // B sized to overlap into a cohesive lumpy mass
       } else { S[p]=0; }
       p++;
     }
   }
-  cloudCenter.needsUpdate=true; cloudSize.needsUpdate=true; cloudBright.needsUpdate=true;
+  cloudCenter.needsUpdate=true; cloudNormal.needsUpdate=true; cloudSize.needsUpdate=true; cloudSeed.needsUpdate=true;
 }
-
-/* ===================== VOLUMETRIC CLOUDS (raymarched, depth-composited) =====================
-   P1: scene -> sceneRT (HalfFloat colour + DepthTexture); a fullscreen pass raymarches cumulus
-   in WORLD space and reads scene depth so MOUNTAINS OCCLUDE clouds; a composite pass blends them
-   over the scene and encodes to sRGB. Cumulus thicken over thermals (coverage texture from
-   thermalSource) = same soaring landmark as the billboards. Lighting = Beer-Lambert + dual-lobe
-   Henyey-Greenstein + sun light-march self-shadow + powder + cheap multi-scatter + sky-gradient
-   ambient, tied to SUN_DIR and the sunset PAL, faded into the SAME FogExp2 haze. Falls back to
-   the billboards on low tier / mobile / no-WebGL2. */
-const CLOUD_TOP=5200;                                   // slab CLOUD_BASE(3900)..CLOUD_TOP
-const COV_N=64, COV_SPAN=CLOUD_CELL*2*CLOUD_R;          // coverage grid window (~20400 units) around craft
-const isMobile=(typeof matchMedia!=='undefined' && matchMedia('(pointer:coarse)').matches) || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent||'');
-const cloudCapable=(renderer.capabilities.isWebGL2===true);   // need real depth textures
-let volCloudsPref=prefB('volclouds', !isMobile);        // master toggle (persisted)
-let cloudsOn=false, cloudScale=0.5, cloudSteps=40, cloudLight=6, cloudWorley=1.0, cloudMaxDist=16000, cloudDebugMode=2;
-// per-tier quality (index by gfxQ): GFX0 -> billboards, GFX1 med, GFX2 high
-const CLOUDCFG=[ null,
-  {scale:0.34, steps:22, light:3, worley:0.0, maxDist:11000},   // med: quarter-ish res, cheap
-  {scale:0.5,  steps:30, light:4, worley:1.0, maxDist:15000} ]; // high: half-res
-
-let sceneRT=null, cloudRT=null;
-const _v2=new THREE.Vector2(), _vp=new THREE.Matrix4(), _camFwd=new THREE.Vector3();
-const covData=new Uint8Array(COV_N*COV_N);
-const covTex=new THREE.DataTexture(covData, COV_N, COV_N, THREE.RedFormat, THREE.UnsignedByteType);
-covTex.minFilter=covTex.magFilter=THREE.LinearFilter; covTex.wrapS=covTex.wrapT=THREE.ClampToEdgeWrapping; covTex.needsUpdate=true;
-let covCX=null, covCZ=null;
-
-const CLOUD_FRAG=`precision highp float;
-varying vec2 vUv;
-uniform sampler2D tDepth, tCov;
-uniform vec2 uCovOrigin, uWind;
-uniform mat4 uInvVP;
-uniform vec3 uCamPos, uCamFwd, uSunDir, uSunCol, uSunGlow, uSkyTop, uSkyGnd, uHorizon, uFog, uOrigin;
-uniform float uNear, uFar, uTime, uCovSpan, uWorley, uMaxDist, uBase, uTop, uAmbient;
-uniform int uSteps, uLight;
-float hash3(vec3 p){ p=fract(p*0.3183099+vec3(0.1,0.2,0.3)); p+=dot(p,p.yzx+19.19); return fract((p.x+p.y)*p.z); }
-float vnoise(vec3 p){ vec3 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
-  return mix(mix(mix(hash3(i+vec3(0,0,0)),hash3(i+vec3(1,0,0)),f.x), mix(hash3(i+vec3(0,1,0)),hash3(i+vec3(1,1,0)),f.x),f.y),
-             mix(mix(hash3(i+vec3(0,0,1)),hash3(i+vec3(1,0,1)),f.x), mix(hash3(i+vec3(0,1,1)),hash3(i+vec3(1,1,1)),f.x),f.y),f.z); }
-float fbm(vec3 p){ float a=0.5,s=0.0; for(int i=0;i<4;i++){ s+=a*vnoise(p); p*=2.02; a*=0.5; } return s; }  // 4 oct (primary)
-float fbm2(vec3 p){ return vnoise(p)*0.65+vnoise(p*2.03+5.2)*0.35; }                                      // cheap 2 oct (light/top)
-float coverageAt(vec2 wxz){ vec2 uv=(wxz-uCovOrigin)/uCovSpan+0.5; return texture2D(tCov,clamp(uv,0.0,1.0)).r; }
-float profile(float y, float cov, float topN){
-  float topH=mix(uBase+450.0, uTop, cov)+topN;                  // taller over strong thermals + noisy bumps -> no flat ceiling
-  return smoothstep(uBase,uBase+150.0,y)*(1.0-smoothstep(topH-540.0,topH+130.0,y));
-}
-float density(vec3 wp){
-  if(wp.y<uBase-40.0||wp.y>uTop+700.0) return 0.0;                              // coarse slab cull (no noise)
-  vec3 np=vec3(wp.x+uOrigin.x, wp.y, wp.z+uOrigin.z); np.xz-=uWind*uTime*3.0;   // drift downwind
-  float cov=mix(uAmbient,1.0,smoothstep(0.40,0.82,coverageAt(wp.xz)));          // only STRONG thermals build cumulus; else sparse fair-weather
-  float topN=(fbm2(np*0.0006)-0.5)*900.0;                                       // bumpy cauliflower top (kills the flat ceiling)
-  float g=profile(wp.y,cov,topN); if(g<=0.0) return 0.0;
-  float d=(fbm(np*0.00042)+cov-1.0)*g;                                          // coverage raises the cloud line -> gaps of clear sky
-  if(d<=0.0) return 0.0;                                                        // EARLY OUT before the erosion octave
-  d-=(uWorley>0.5?0.13:0.08)*fbm(np*0.0016);                                    // 3D erosion -> fuzzy volumetric edges (only inside cloud)
-  return clamp(d*2.4,0.0,1.0);
-}
-float densityLight(vec3 wp){                                                    // cheap density for the sun light-march (2 oct, no erosion)
-  if(wp.y<uBase-40.0||wp.y>uTop+700.0) return 0.0;
-  vec3 np=vec3(wp.x+uOrigin.x, wp.y, wp.z+uOrigin.z); np.xz-=uWind*uTime*3.0;
-  float cov=mix(uAmbient,1.0,smoothstep(0.40,0.82,coverageAt(wp.xz)));
-  float g=profile(wp.y,cov,0.0); if(g<=0.0) return 0.0;
-  return clamp((fbm2(np*0.00042)+cov-1.0)*g*2.4,0.0,1.0);
-}
-float hg(float c,float g){ float g2=g*g; return (1.0-g2)/(12.5664*pow(1.0+g2-2.0*g*c,1.5)); }
-float dualHG(float c){ return mix(hg(c,0.72),hg(c,-0.22),0.5); }
-void main(){
-  vec4 far=uInvVP*vec4(vUv*2.0-1.0,1.0,1.0); vec3 rd=normalize(far.xyz/far.w-uCamPos), ro=uCamPos;
-  float zr=texture2D(tDepth,vUv).x*2.0-1.0;
-  float linEye=(2.0*uNear*uFar)/(uFar+uNear-zr*(uFar-uNear));
-  float tTer=linEye/max(dot(rd,uCamFwd),1e-3);
-  float tEnter,tExit;
-  if(abs(rd.y)<1e-4){ if(ro.y<uBase||ro.y>uTop+700.0){ gl_FragColor=vec4(0.0); return; } tEnter=0.0; tExit=uMaxDist; }
-  else { float ta=(uBase-ro.y)/rd.y, tb=(uTop+700.0-ro.y)/rd.y; tEnter=min(ta,tb); tExit=max(ta,tb); }
-  tEnter=max(tEnter,0.0); tExit=min(tExit,min(tTer,uMaxDist));
-  if(tExit<=tEnter){ gl_FragColor=vec4(0.0); return; }
-  float dt=(tExit-tEnter)/float(uSteps);
-  float t=tEnter+hash3(vec3(gl_FragCoord.xy,uTime))*dt;
-  float T=1.0; vec3 L=vec3(0.0); float ph=dualHG(dot(rd,uSunDir));
-  for(int i=0;i<64;i++){ if(i>=uSteps||T<0.02) break;
-    vec3 wp=ro+rd*t; float d=density(wp);
-    if(d>0.002){
-      float ls=0.0; for(int j=0;j<8;j++){ if(j>=uLight) break; ls+=densityLight(wp+uSunDir*float(j+1)*130.0); }
-      float sun=exp(-ls*130.0*0.006);
-      float powder=1.0-exp(-d*2.2);
-      float hf=clamp((wp.y-uBase)/(uTop-uBase),0.0,1.0);
-      vec3 amb=mix(uSkyGnd,uSkyTop,hf)*0.30;                 // cool sky fill (undersides)
-      vec3 ms=uSunGlow*pow(sun,0.4)*0.28;                   // warm multi-scatter core glow
-      vec3 sc=(uSunCol*(sun*(ph+0.18)*3.2)+amb+ms)*powder;  // warm direct + isotropic floor so tops stay lit from any view
-      float a=d*0.022*dt; L+=T*sc*a; T*=exp(-a);
-    }
-    t+=dt;
-  }
-  float fog=1.0-exp(-((tEnter+tExit)*0.5)*0.000068);
-  L=mix(L,uFog*(1.0-T),fog);
-  gl_FragColor=vec4(L,1.0-T);
-}`;
-const _fsVert=`varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position.xy,0.0,1.0); }`;
-const raymarchMat=new THREE.ShaderMaterial({ depthTest:false, depthWrite:false, vertexShader:_fsVert, fragmentShader:CLOUD_FRAG,
-  uniforms:{ tDepth:{value:null}, uInvVP:{value:new THREE.Matrix4()}, uCamPos:{value:new THREE.Vector3()}, uCamFwd:{value:new THREE.Vector3()},
-    uNear:{value:0.5}, uFar:{value:60000}, uSunDir:{value:SUN_DIR.clone()}, uSunCol:{value:PAL.haloTint.clone()}, uSunGlow:{value:PAL.sunGlow.clone()},
-    uSkyTop:{value:PAL.skyTop.clone()}, uSkyGnd:{value:PAL.skyGround.clone()}, uHorizon:{value:PAL.horizon.clone()}, uFog:{value:PAL.fog.clone()},
-    tCov:{value:covTex}, uCovOrigin:{value:new THREE.Vector2()}, uCovSpan:{value:COV_SPAN}, uOrigin:{value:new THREE.Vector3()},
-    uTime:{value:0}, uWind:{value:new THREE.Vector2(1,0.35)}, uSteps:{value:40}, uLight:{value:6}, uWorley:{value:1.0},
-    uMaxDist:{value:16000}, uBase:{value:CLOUD_BASE}, uTop:{value:CLOUD_TOP}, uAmbient:{value:0.12} } });
-const compositeMat=new THREE.ShaderMaterial({ depthTest:false, depthWrite:false, vertexShader:_fsVert,
-  uniforms:{ tColor:{value:null}, tCloud:{value:null}, uHasCloud:{value:0} },
-  fragmentShader:`precision highp float; varying vec2 vUv; uniform sampler2D tColor,tCloud; uniform float uHasCloud;
-    vec3 lin2srgb(vec3 c){ c=clamp(c,0.0,1.0); return mix(c*12.92, 1.055*pow(c,vec3(1.0/2.4))-0.055, step(0.0031308,c)); }
-    void main(){ vec3 scene=texture2D(tColor,vUv).rgb; vec4 cl=uHasCloud>0.5?texture2D(tCloud,vUv):vec4(0.0);
-      gl_FragColor=vec4(lin2srgb(scene*(1.0-cl.a)+cl.rgb),1.0); }` });
-const fsScene=new THREE.Scene(), fsCam=new THREE.OrthographicCamera(-1,1,1,-1,0,1);
-const fsQuad=new THREE.Mesh(new THREE.PlaneGeometry(2,2)); fsQuad.frustumCulled=false; fsScene.add(fsQuad);
-
-function makeCloudRTs(){
-  renderer.getDrawingBufferSize(_v2); const W=Math.max(2,_v2.x|0), H=Math.max(2,_v2.y|0);
-  const dt=new THREE.DepthTexture(W,H); dt.type=THREE.UnsignedIntType;
-  sceneRT=new THREE.WebGLRenderTarget(W,H,{type:THREE.HalfFloatType, depthBuffer:true, depthTexture:dt, minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter});
-  cloudRT=new THREE.WebGLRenderTarget(Math.max(2,(W*cloudScale)|0), Math.max(2,(H*cloudScale)|0), {type:THREE.HalfFloatType, depthBuffer:false, minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter});
-}
-function resizeCloudRTs(){ if(!sceneRT) return; renderer.getDrawingBufferSize(_v2); const W=Math.max(2,_v2.x|0), H=Math.max(2,_v2.y|0);
-  sceneRT.setSize(W,H); cloudRT.setSize(Math.max(2,(W*cloudScale)|0), Math.max(2,(H*cloudScale)|0)); }
-function updateCoverage(){
-  const ccx=Math.round(glider.pos.x/CLOUD_CELL), ccz=Math.round(glider.pos.z/CLOUD_CELL);
-  if(ccx===covCX && ccz===covCZ) return; covCX=ccx; covCZ=ccz;
-  const gx=glider.pos.x, gz=glider.pos.z;
-  for(let j=0;j<COV_N;j++)for(let i=0;i<COV_N;i++){
-    const wx=gx+(i/(COV_N-1)-0.5)*COV_SPAN, wz=gz+(j/(COV_N-1)-0.5)*COV_SPAN;
-    const s=DESCENT?0.0:thermalSource(wx,wz); covData[j*COV_N+i]=Math.max(0,Math.min(255,(s*255)|0));
-  }
-  covTex.needsUpdate=true; raymarchMat.uniforms.uCovOrigin.value.set(gx,gz);
-  raymarchMat.uniforms.uAmbient.value=DESCENT?0.22:0.12;
-}
-function applyCloudGfx(){
-  const cfg=(cloudCapable && volCloudsPref) ? CLOUDCFG[gfxQ] : null;
-  cloudsOn=!!cfg;
-  if(cfg){ cloudScale=cfg.scale; cloudSteps=cfg.steps; cloudLight=cfg.light; cloudWorley=cfg.worley; cloudMaxDist=cfg.maxDist;
-    const u=raymarchMat.uniforms; u.uSteps.value=cloudSteps; u.uLight.value=cloudLight; u.uWorley.value=cloudWorley; u.uMaxDist.value=cloudMaxDist;
-    if(!sceneRT) makeCloudRTs(); else resizeCloudRTs();
-    covCX=null;   // force coverage refill
-  }
-  if(billboardClouds) billboardClouds.visible=!cloudsOn;
-}
-function renderFrame(){
-  if(!cloudsOn || cloudDebugMode===0){ renderer.setRenderTarget(null); renderer.render(scene,camera); return; }
-  updateCoverage();
-  renderer.setRenderTarget(sceneRT); renderer.render(scene,camera);
-  let hasCloud=0.0;
-  if(cloudDebugMode>=2){
-    camera.getWorldDirection(_camFwd); _vp.multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse);
-    const u=raymarchMat.uniforms; u.uInvVP.value.copy(_vp).invert(); u.uCamPos.value.copy(camera.position); u.uCamFwd.value.copy(_camFwd);
-    u.uNear.value=camera.near; u.uFar.value=camera.far; u.uTime.value=simTime; u.uOrigin.value.set(originX,originY,originZ); u.tDepth.value=sceneRT.depthTexture;
-    fsQuad.material=raymarchMat; renderer.setRenderTarget(cloudRT); renderer.render(fsScene,fsCam); hasCloud=1.0;
-  }
-  compositeMat.uniforms.tColor.value=sceneRT.texture; compositeMat.uniforms.tCloud.value=cloudRT?cloudRT.texture:null; compositeMat.uniforms.uHasCloud.value=hasCloud;
-  fsQuad.material=compositeMat; renderer.setRenderTarget(null); renderer.render(fsScene,fsCam);
-}
-applyCloudGfx();
+function setCloudStyle(c){ cloudStyle=clamp(Math.round(c),0,2); prefSet('cloudstyle', cloudStyle); cloudCX=null;
+  if(cloudClouds) cloudClouds.visible=cloudStyle!==0; updateClouds();
+  const seg=document.getElementById('set-clouds'); if(seg) Array.from(seg.children).forEach(b=>b.classList.toggle('on', +b.dataset.c===cloudStyle)); }
 
 /* ===================== GLIDER (mesh + state) ===================== */
 const glider={ pos:new THREE.Vector3(), q:new THREE.Quaternion(), vel:new THREE.Vector3(), angVel:new THREE.Vector3(),
@@ -1176,7 +1057,7 @@ document.getElementById('tag').textContent='swooper v'+VERSION;
 function goSeed(v,auto){ prefSet('seed',(v>>>0)||0); if(auto){ try{ sessionStorage.setItem('sw_go','1'); }catch(e){} } location.href=location.pathname; }   // clean URL, seed in storage
 function setAudioOn(v){ audioOn=v; prefSet('sound', v?'1':'0'); const c=document.getElementById('set-sound'); if(c)c.checked=v; }
 function setVarioOn(v){ varioOn=v; prefSet('vario', v?'1':'0'); const c=document.getElementById('set-vario'); if(c)c.checked=v; }
-function setGfx(q){ gfxQ=q; prefSet('gfx', q); applyGraphics(q); applyCloudGfx(); const seg=document.getElementById('set-gfx'); if(seg) Array.from(seg.children).forEach(btn=>btn.classList.toggle('on', +btn.dataset.q===q)); }
+function setGfx(q){ gfxQ=q; prefSet('gfx', q); applyGraphics(q); const seg=document.getElementById('set-gfx'); if(seg) Array.from(seg.children).forEach(btn=>btn.classList.toggle('on', +btn.dataset.q===q)); }
 // Space: freeze-frame pause (mute, no overlay so you can study the view).  Esc: settings menu.
 function pauseFreeze(){ if(state!=='flying') return; state='paused'; pauseChip.classList.remove('hidden'); silenceAudio(); }
 function openSettings(){ if(state!=='flying'&&state!=='paused') return; state='settings'; dragging=false;
@@ -1185,7 +1066,7 @@ function openSettings(){ if(state!=='flying'&&state!=='paused') return; state='s
   document.getElementById('set-vario').checked=varioOn;
   document.getElementById('set-crash').checked=crashOn;
   document.getElementById('set-trails').checked=trailsOn;
-  { const vc=document.getElementById('set-volclouds'); vc.checked=volCloudsPref; vc.disabled=!cloudCapable; }
+  { const seg=document.getElementById('set-clouds'); if(seg) Array.from(seg.children).forEach(b=>b.classList.toggle('on', +b.dataset.c===cloudStyle)); }
   document.getElementById('set-fx').checked=fxOn;
   document.getElementById('set-therm').value=thermalScale;
   { const seg=document.getElementById('set-gfx'); Array.from(seg.children).forEach(btn=>btn.classList.toggle('on', +btn.dataset.q===gfxQ)); }
@@ -1202,7 +1083,7 @@ document.getElementById('set-sound').onchange=e=>{ setAudioOn(e.target.checked);
 document.getElementById('set-vario').onchange=e=>{ setVarioOn(e.target.checked); };
 document.getElementById('set-crash').onchange=e=>{ crashOn=e.target.checked; prefSet('crash', crashOn?'1':'0'); };
 document.getElementById('set-trails').onchange=e=>{ trailsOn=e.target.checked; prefSet('trails', trailsOn?'1':'0'); };
-document.getElementById('set-volclouds').onchange=e=>{ volCloudsPref=e.target.checked; prefSet('volclouds', volCloudsPref?'1':'0'); applyCloudGfx(); };
+document.getElementById('set-clouds').querySelectorAll('button').forEach(b=>{ b.onclick=()=>setCloudStyle(+b.dataset.c); });
 document.getElementById('set-fx').onchange=e=>{ fxOn=e.target.checked; prefSet('fx', fxOn?'1':'0'); };
 document.getElementById('set-therm').oninput=e=>{ setThermals(parseFloat(e.target.value)); };
 document.getElementById('set-gfx').querySelectorAll('button').forEach(btn=>{ btn.onclick=()=>setGfx(+btn.dataset.q); });
@@ -1771,9 +1652,11 @@ function loop(now){
   sun.position.copy(_rp).add(SUN_OFFSET); sun.target.position.copy(_rp); sun.target.updateMatrixWorld();
   sunDisc.position.copy(camera.position).addScaledVector(SUN_DIR,44000);
   updateAirParticles(frame||FIXED);
-  renderFrame();
+  cloudUms.uTime.value=simTime; cloudUms.uCam.value.copy(camera.position);
+  cloudUms.uSunView.value.copy(SUN_DIR).transformDirection(camera.matrixWorldInverse);   // sun dir in view space (for per-fragment cloud lighting)
+  renderer.render(scene,camera);
 }
-addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); resizeCloudRTs(); });
+addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
 
 // menu backdrop
 glider.pos.set(0, Math.max(terrainHeight(0,0)+1300, 2700), 0);
@@ -1816,10 +1699,8 @@ window.__swooper={
   mapPeak(){ return +heatPeak.toFixed(2); },
   gfxState(){ return { q:gfxQ, pr:+renderer.getPixelRatio().toFixed(2), shadows:renderer.shadowMap.enabled }; },
   setGfx(q){ setGfx(q); },
-  cloudState(){ return { on:cloudsOn, capable:cloudCapable, mobile:isMobile, pref:volCloudsPref, scale:cloudScale, steps:cloudSteps, light:cloudLight, worley:cloudWorley, mode:cloudDebugMode, sceneRT:!!sceneRT, billboards:billboardClouds?billboardClouds.visible:null }; },
-  _cloudMode(n){ cloudDebugMode=n|0; },
-  _cloudCfg(scale,steps,light,worley){ if(scale){ cloudScale=scale; resizeCloudRTs(); } if(steps){ cloudSteps=steps|0; raymarchMat.uniforms.uSteps.value=cloudSteps; } if(light){ cloudLight=light|0; raymarchMat.uniforms.uLight.value=cloudLight; } if(worley!==undefined&&worley!==null){ cloudWorley=worley; raymarchMat.uniforms.uWorley.value=worley; } },
-  setVolClouds(b){ volCloudsPref=!!b; prefSet('volclouds', b?'1':'0'); applyCloudGfx(); },
+  cloudStyleState(){ return { style:cloudStyle, visible:cloudClouds?cloudClouds.visible:false, n:CLOUD_N }; },
+  setCloudStyle(c){ setCloudStyle(c); },
   thermState(){ return { scale:+thermalScale.toFixed(2) }; },
   originState(){ return { oZ:originZ, oY:+originY.toFixed(0), gx:+glider.pos.x.toFixed(0), gz:+glider.pos.z.toFixed(0), gy:+glider.pos.y.toFixed(0), agl:+(glider.pos.y-terrainHeight(glider.pos.x,glider.pos.z)).toFixed(0), depth:+descDepth.toFixed(0) }; },
   _tp(x,y,z){ glider.pos.set(x,y,z); prevPos.copy(glider.pos); },
