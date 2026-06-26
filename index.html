@@ -277,7 +277,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 window.__swooper = {};
 try {
-const VERSION = '0.95';
+const VERSION = '0.96';
 
 /* =====================================================================
    OWN FLIGHT PHYSICS — real glider aerodynamics (no scripted limits).
@@ -730,7 +730,7 @@ const GLIDER_SCALE=1.2;   // model span ~15 -> ~18 (game scale)
 new GLTFLoader().load('./glider/scene.gltf', gltf=>{
   const m=gltf.scene; m.scale.setScalar(GLIDER_SCALE); m.rotation.y=Math.PI;   // nose +z -> game -z
   m.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.frustumCulled=false; if(o.material){ o.material.metalness=Math.min(o.material.metalness??0,0.15); } }
-    if(/LandingGear|Wheel|_Door/.test(o.name||'')) o.visible=false; });   // retract gear/doors for clean flight
+    if(/LandingGear|Wheel/.test(o.name||'')) o.visible=false; });   // retract gear + bay doors (keep the cockpit canopy/glass "_Door")
   craftHolder.add(m); flex.model=m;
   flex.ailR=m.getObjectByName('V1_SailplaneGlider_1_Aileron_R');   // model -x -> game +x (right) after the 180° flip
   flex.ailL=m.getObjectByName('V1_SailplaneGlider_1_Aileron_L');
@@ -837,17 +837,21 @@ for(let i=0;i<TRAIL_N;i++){ const u=(TRAIL_N-1-i)/(TRAIL_N-1);        // u: 0 at
   trW[i]=0.02 + 0.42*Math.min(1,u/0.6);                              // much thinner ribbon
   trA[i]=Math.min(1,u/0.16) * (1-smoothstep01(0.72,1.0,u)); }
 function makeTrail(){
-  const cpos=new Float32Array(TRAIL_N*3), vpos=new Float32Array(TRAIL_N*2*3), valpha=new Float32Array(TRAIL_N*2);
-  for(let i=0;i<TRAIL_N;i++){ valpha[i*2]=trA[i]; valpha[i*2+1]=trA[i]; }
+  const cpos=new Float32Array(TRAIL_N*3), vpos=new Float32Array(TRAIL_N*2*3), valpha=new Float32Array(TRAIL_N*2), valU=new Float32Array(TRAIL_N*2);
+  for(let i=0;i<TRAIL_N;i++){ valpha[i*2]=trA[i]; valpha[i*2+1]=trA[i];
+    const u=(TRAIL_N-1-i)/(TRAIL_N-1); valU[i*2]=u; valU[i*2+1]=u; }   // aU: 0 at tip (wing) -> 1 at tail, drives the timed reveal
   const idx=[]; for(let i=0;i<TRAIL_N-1;i++){ const a=i*2; idx.push(a,a+1,a+2, a+1,a+3,a+2); }
   const geo=new THREE.BufferGeometry();
   geo.setAttribute('position',new THREE.BufferAttribute(vpos,3));
   geo.setAttribute('aAlpha',new THREE.BufferAttribute(valpha,1));
+  geo.setAttribute('aU',new THREE.BufferAttribute(valU,1));
   geo.setIndex(idx);
   const mat=new THREE.ShaderMaterial({ transparent:true, depthWrite:false, side:THREE.DoubleSide,
-    uniforms:{ uColor:{value:new THREE.Color(0xe6eef5)}, uOpacity:{value:0} },
-    vertexShader:`attribute float aAlpha; varying float vA; void main(){ vA=aAlpha; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
-    fragmentShader:`uniform vec3 uColor; uniform float uOpacity; varying float vA; void main(){ float a=vA*uOpacity; if(a<0.004) discard; gl_FragColor=vec4(uColor,a); }`});
+    uniforms:{ uColor:{value:new THREE.Color(0xe6eef5)}, uOpacity:{value:0}, uReveal:{value:1} },
+    vertexShader:`attribute float aAlpha; attribute float aU; varying float vA; varying float vU; void main(){ vA=aAlpha; vU=aU; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+    fragmentShader:`uniform vec3 uColor; uniform float uOpacity; uniform float uReveal; varying float vA; varying float vU;
+      void main(){ float rev=1.0-smoothstep(uReveal, uReveal+0.14, vU);   // grows from the wing (vU=0) outward over time
+        float a=vA*uOpacity*rev; if(a<0.004) discard; gl_FragColor=vec4(uColor,a); }`});
   const mesh=new THREE.Mesh(geo,mat); mesh.frustumCulled=false; mesh.renderOrder=3; scene.add(mesh);   // above clouds (renderOrder 2) so trails stay visible
   return {cpos,vpos,geo,mat,mesh};
 }
@@ -864,7 +868,7 @@ function rebuildRibbon(tr){
     _vd.set(cam.x-c[o], cam.y-c[o+1], cam.z-c[o+2]);
     _sd.crossVectors(_tan,_vd); if(_sd.lengthSq()<1e-8) _sd.set(1,0,0); else _sd.normalize();
     _uph.crossVectors(_tan,_sd);                                   // up = perpendicular to tangent & side
-    const w=trW[i], ph=i*0.45+t*2.0, cw=Math.cos(ph)*w*1.5, sw=Math.sin(ph)*w*1.5;   // two strands spiral around the core (looser winding)
+    const w=trW[i], ph=i*0.26+t*1.5, cw=Math.cos(ph)*w*1.35, sw=Math.sin(ph)*w*1.35;   // two strands spiral around the core (gentler winding — fewer turns per length)
     const ox=_sd.x*cw+_uph.x*sw, oy=_sd.y*cw+_uph.y*sw, oz=_sd.z*cw+_uph.z*sw;
     v[a]=c[o]+ox;   v[a+1]=c[o+1]+oy; v[a+2]=c[o+2]+oz;
     v[a+3]=c[o]-ox; v[a+4]=c[o+1]-oy; v[a+5]=c[o+2]-oz;
@@ -873,16 +877,18 @@ function rebuildRibbon(tr){
 }
 function seedTrail(tr,sign,rp,rq){ wingTipLocal(sign,_tip).applyQuaternion(rq).add(rp);
   for(let i=0;i<TRAIL_N;i++){ tr.cpos[i*3]=_tip.x; tr.cpos[i*3+1]=_tip.y; tr.cpos[i*3+2]=_tip.z; } rebuildRibbon(tr); }
-let _trailEmit=false;
+let _trailEmit=false, _trailReveal=0;
+const TRAIL_REVEAL_T=0.9;                                        // seconds for the ribbon to grow wing->tail (slower appearance)
 function updateTrails(rp,rq,dt){
   const g=Math.abs(glider.gload), emit=trailsOn && g>1.8;        // appear only under harder G
   const op = emit ? clamp((g-1.8)*0.3,0,0.35) : 0;               // twin-helix strands — half as opaque as before
-  if(emit && !_trailEmit){ seedTrail(trailR,1,rp,rq); seedTrail(trailL,-1,rp,rq); }   // collapse to the tip so the trail GROWS out from the wing, not all at once
+  if(emit && !_trailEmit){ seedTrail(trailR,1,rp,rq); seedTrail(trailL,-1,rp,rq); _trailReveal=0; }   // collapse to the tip so the trail GROWS out from the wing, not all at once
   _trailEmit=emit;
+  _trailReveal = emit ? Math.min(1,_trailReveal+dt/TRAIL_REVEAL_T) : 0;   // timed reveal, framerate-independent
   for(const [tr,sign] of [[trailR,1],[trailL,-1]]){
     wingTipLocal(sign,_tip).applyQuaternion(rq).add(rp);
     tr.cpos.copyWithin(0,3); const n=tr.cpos.length; tr.cpos[n-3]=_tip.x; tr.cpos[n-2]=_tip.y; tr.cpos[n-1]=_tip.z;
-    tr.mat.uniforms.uOpacity.value=op; rebuildRibbon(tr);
+    tr.mat.uniforms.uOpacity.value=op; tr.mat.uniforms.uReveal.value=_trailReveal; rebuildRibbon(tr);
   }
 }
 
@@ -1621,6 +1627,7 @@ window.__swooper={
   clearance(){ return +clearanceNow().toFixed(0); },
   crashState(){ return {on:crashOn, state}; }, setCrash(v){ crashOn=v; },
   trailOpacity(){ return +trailR.mat.uniforms.uOpacity.value.toFixed(3); }, setTrails(v){ trailsOn=v; },
+  trailReveal(){ return +trailR.mat.uniforms.uReveal.value.toFixed(3); },
   trailTipDist(){ const c=trailR.cpos,n=c.length; return +Math.hypot(c[n-3]-glider.pos.x,c[n-2]-glider.pos.y,c[n-3+2]-glider.pos.z).toFixed(2); },
   varioState(){ return varioOn; }, brakeFxOpacity(){ return +brkMat.uniforms.uOpacity.value.toFixed(3); },
   orbit(az,el){ camOrbitAz=az; camOrbitEl=el; camIdle=0; }, camAz(){ return +camOrbitAz.toFixed(3); },
